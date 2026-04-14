@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/boop.png" alt="Boop" width="220" />
+</p>
+
 # Boop
 
 An iMessage-based personal agent built on top of the [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/overview).
