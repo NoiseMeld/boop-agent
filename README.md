@@ -84,19 +84,20 @@ claude  # sign in, then Ctrl-C to exit
 # 3. Interactive setup — writes .env.local, creates Convex deployment
 npm run setup
 
-# 4. Start everything in TWO terminal windows
-#    Terminal 1 — keeps the server + Convex + dashboard running:
+# 4. Install ngrok (one-time) and authorize it
+brew install ngrok
+# or grab from https://ngrok.com/download
+ngrok config add-authtoken <your-token>   # free at https://dashboard.ngrok.com
+
+# 5. Start everything with one command — server, Convex, debug UI, and ngrok
 npm run dev
-
-#    Terminal 2 — exposes your local server to Sendblue:
-ngrok http 3456
-#    copy the https://<something>.ngrok.app URL it prints
 ```
 
-Then in your Sendblue dashboard, set the webhook for your number to:
+`npm run dev` prints color-prefixed output from all four processes and shows a banner with your ngrok webhook URL once the tunnel is live. Copy that URL into your Sendblue dashboard as the webhook for your number.
 
 ```
-https://<your-ngrok>.ngrok.app/sendblue/webhook
+Public URL:        https://<abc123>.ngrok.app
+Sendblue webhook:  https://<abc123>.ngrok.app/sendblue/webhook
 ```
 
 Text your Sendblue number. The agent replies.

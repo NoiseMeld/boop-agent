@@ -164,34 +164,28 @@ You can override with ANTHROPIC_API_KEY in .env.local if you'd rather use an API
   const port = answers.PORT ?? "3456";
   banner("You're set up. Here's how to actually run it.");
   console.log(`
-You need TWO terminal windows for local dev — one for the server, one for ngrok.
+Before you start: install ngrok (one-time).
 
-┌─ Terminal 1 ───────────────────────────────────────────────┐
-│                                                            │
-│   npm run dev                                              │
-│                                                            │
-│   Starts: server + Convex watcher + debug dashboard.       │
-│   Leave this running.                                      │
-│                                                            │
-└────────────────────────────────────────────────────────────┘
+  brew install ngrok                           # macOS
+  # or download:  https://ngrok.com/download
+  ngrok config add-authtoken <your-token>      # free at https://dashboard.ngrok.com
 
-┌─ Terminal 2 ───────────────────────────────────────────────┐
-│                                                            │
-│   ngrok http ${port}                                             │
-│                                                            │
-│   Copy the https://<something>.ngrok.app URL it prints.    │
-│   Leave this running too.                                  │
-│                                                            │
-└────────────────────────────────────────────────────────────┘
+Then run ONE command:
 
-Then wire up Sendblue:
+  npm run dev
 
-  1. Go to your Sendblue dashboard → Numbers → your number → Webhooks.
-  2. Paste:  https://<your-ngrok>.ngrok.app/sendblue/webhook
-  3. Save.
+That starts the server, Convex watcher, debug dashboard, AND ngrok all
+together — color-prefixed output so you can tell who's saying what. Once
+the tunnel is live, you'll see a banner with your public URL.
+
+Wire up Sendblue:
+
+  1. Copy the "Sendblue webhook" URL from the banner.
+  2. Sendblue dashboard → Numbers → your number → Webhooks → paste → save.
 
 Test it:
-  • Open http://localhost:5173 for the debug dashboard.
+  • Open http://localhost:5173 for the debug dashboard (Chat tab works
+    without Sendblue).
   • Or text your Sendblue number — the agent should reply.
 
 About PUBLIC_URL in .env.local:

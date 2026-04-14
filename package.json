@@ -8,7 +8,8 @@
   "scripts": {
     "setup": "tsx scripts/setup.ts",
     "preflight": "node scripts/preflight.mjs",
-    "dev": "npm-run-all --parallel dev:server dev:convex dev:debug",
+    "dev": "node scripts/dev.mjs",
+    "dev:parallel": "npm-run-all --parallel dev:server dev:convex dev:debug",
     "dev:server": "npm run preflight && tsx watch server/index.ts",
     "dev:convex": "convex dev",
     "dev:debug": "vite --config debug/vite.config.ts",
