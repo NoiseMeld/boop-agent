@@ -101,10 +101,12 @@ export async function sendImessage(toNumber: string, text: string): Promise<void
 export async function sendTypingIndicator(toNumber: string): Promise<void> {
   const h = headers();
   if (!h) return;
+  const from = process.env.SENDBLUE_FROM_NUMBER;
   try {
-    await fetch(`${API_BASE}/send-typing-indicator?number=${encodeURIComponent(toNumber)}`, {
+    await fetch(`${API_BASE}/send-typing-indicator`, {
       method: "POST",
       headers: h,
+      body: JSON.stringify({ number: toNumber, from_number: from }),
     });
   } catch {
     /* non-fatal */
