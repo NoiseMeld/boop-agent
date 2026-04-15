@@ -64,7 +64,7 @@ export function App() {
   const [theme, setTheme] = useState<Theme>(getStoredTheme);
   const { connected } = useSocket();
 
-  const metrics = useQuery(api.stats.realtimeMetrics, {});
+  const counts = useQuery(api.memoryRecords.countsByTier, {});
   const agents = useQuery(api.agents.list, {});
   const activeAgentCount = (agents ?? []).filter(
     (a) => a.status === "running" || a.status === "spawned",
@@ -119,13 +119,13 @@ export function App() {
         </div>
 
         <div className="flex items-center gap-4">
-          {metrics && (
+          {counts && (
             <div className="flex items-center gap-4">
-              <MetricPill label="Short" value={metrics.shortTermCount} isDark={isDark} />
-              <MetricPill label="Long" value={metrics.longTermCount} isDark={isDark} />
+              <MetricPill label="Short" value={counts.short} isDark={isDark} />
+              <MetricPill label="Long" value={counts.long} isDark={isDark} />
               <MetricPill
                 label="Perm"
-                value={metrics.permanentCount}
+                value={counts.permanent}
                 isDark={isDark}
                 color={isDark ? "text-amber-400" : "text-amber-600"}
               />
