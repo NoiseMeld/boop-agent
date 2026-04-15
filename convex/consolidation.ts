@@ -29,6 +29,7 @@ export const updateRun = mutation({
     mergedCount: v.optional(v.number()),
     prunedCount: v.optional(v.number()),
     notes: v.optional(v.string()),
+    details: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const { runId, ...patch } = args;

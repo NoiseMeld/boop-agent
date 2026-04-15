@@ -169,6 +169,9 @@ export default defineSchema({
     mergedCount: v.number(),
     prunedCount: v.number(),
     notes: v.optional(v.string()),
+    // JSON blob: { proposals: [...], decisions: [...], applied: [...] }
+    // Captured so you can inspect the reasoning for any historical run.
+    details: v.optional(v.string()),
     startedAt: v.number(),
     completedAt: v.optional(v.number()),
   })

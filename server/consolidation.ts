@@ -54,6 +54,18 @@ interface Proposal {
   reason?: string;
 }
 
+interface Decision {
+  proposalIndex: number;
+  approve: boolean;
+  rationale: string;
+}
+
+interface Applied {
+  proposalIndex: number;
+  type: "merge" | "supersede" | "prune";
+  summary: string;
+}
+
 async function runLlm(systemPrompt: string, userPrompt: string): Promise<string> {
   let buffer = "";
   for await (const msg of query({
@@ -124,7 +136,12 @@ export async function runConsolidation(trigger = "scheduled"): Promise<{
     const proposerRaw = await runLlm(PROPOSER_PROMPT, payload);
     const proposerJson = parseJson<{ proposals: Proposal[] }>(proposerRaw);
     const proposals = proposerJson?.proposals ?? [];
-    broadcast("consolidation_phase", { runId, phase: "proposed", proposalsCount: proposals.length });
+    broadcast("consolidation_phase", {
+      runId,
+      phase: "proposed",
+      proposalsCount: proposals.length,
+      proposals,
+    });
 
     await convex.mutation(api.consolidation.updateRun, {
       runId,
@@ -158,8 +175,11 @@ export async function runConsolidation(trigger = "scheduled"): Promise<{
       phase: "judged",
       approvedCount: approved.size,
       rejectedCount: decisions.length - approved.size,
+      decisions,
     });
 
+    const applied: Applied[] = [];
+    broadcast("consolidation_phase", { runId, phase: "applying" });
     for (let i = 0; i < proposals.length; i++) {
       if (!approved.has(i)) continue;
       const p = proposals[i];
@@ -177,6 +197,11 @@ export async function runConsolidation(trigger = "scheduled"): Promise<{
             supersedes: p.absorb,
           });
           merged++;
+          applied.push({
+            proposalIndex: i,
+            type: "merge",
+            summary: `merged ${p.absorb.length} into ${p.keep}`,
+          });
         } else if (p.type === "supersede" && p.newer && p.older?.length) {
           const newer = memories.find((m) => m.memoryId === p.newer);
           if (!newer) continue;
@@ -190,12 +215,22 @@ export async function runConsolidation(trigger = "scheduled"): Promise<{
             supersedes: p.older,
           });
           merged++;
+          applied.push({
+            proposalIndex: i,
+            type: "supersede",
+            summary: `${p.newer} supersedes ${p.older.length} older`,
+          });
         } else if (p.type === "prune" && p.memoryId) {
           await convex.mutation(api.memoryRecords.setLifecycle, {
             memoryId: p.memoryId,
             lifecycle: "pruned",
           });
           pruned++;
+          applied.push({
+            proposalIndex: i,
+            type: "prune",
+            summary: `pruned ${p.memoryId}`,
+          });
         }
       } catch (err) {
         console.warn("[consolidation] apply failed", err);
@@ -207,6 +242,12 @@ export async function runConsolidation(trigger = "scheduled"): Promise<{
       status: "completed",
       mergedCount: merged,
       prunedCount: pruned,
+      details: JSON.stringify({
+        memoriesScanned: memories.length,
+        proposals,
+        decisions,
+        applied,
+      }),
     });
     await convex.mutation(api.memoryEvents.emit, {
       eventType: "memory.consolidated",

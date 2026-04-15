@@ -412,69 +412,256 @@ function ConsolidationDetail({
         />
       </div>
 
-      <div className="flex-1 overflow-y-auto debug-scroll p-5">
-        <div
-          className={`text-[10px] font-semibold uppercase tracking-wider mb-3 ${muted}`}
-        >
-          Pipeline Timeline
-        </div>
-        {allPhases.length === 0 ? (
-          <div className={`text-sm ${muted}`}>
-            No live phase events (run may have completed before this panel was open).
-            {run.notes && (
-              <div className="mt-2">
-                <span className="text-[10px] font-bold mono">NOTES </span>
-                {run.notes}
-              </div>
-            )}
+      <div className="flex-1 overflow-y-auto debug-scroll p-5 space-y-6">
+        {/* Pipeline timeline (live + historical) */}
+        <section>
+          <div
+            className={`text-[10px] font-semibold uppercase tracking-wider mb-3 ${muted}`}
+          >
+            Pipeline Timeline
           </div>
-        ) : (
-          <div className="space-y-0">
-            {allPhases.map((p, i) => {
-              const cfg = PHASE_CONFIG[p.phase] ?? PHASE_CONFIG.started;
-              const isLast = i === allPhases.length - 1;
-              return (
-                <div key={`${p.ts}-${i}`} className="flex gap-3 slide-down">
-                  <div className="flex flex-col items-center shrink-0 w-5">
-                    <div className="mt-1.5 text-[14px] leading-none">
-                      {cfg.icon}
+          {allPhases.length === 0 ? (
+            <div className={`text-sm ${muted}`}>
+              No live phase events captured. Scroll down for the stored
+              proposals and decisions from this run.
+            </div>
+          ) : (
+            <div className="space-y-0">
+              {allPhases.map((p, i) => {
+                const cfg = PHASE_CONFIG[p.phase] ?? PHASE_CONFIG.started;
+                const isLast = i === allPhases.length - 1;
+                return (
+                  <div key={`${p.ts}-${i}`} className="flex gap-3 slide-down">
+                    <div className="flex flex-col items-center shrink-0 w-5">
+                      <div className="mt-1.5 text-[14px] leading-none">
+                        {cfg.icon}
+                      </div>
+                      {!isLast && (
+                        <div
+                          className={`flex-1 w-px mt-1 ${
+                            isDark ? "bg-slate-800" : "bg-slate-200"
+                          }`}
+                        />
+                      )}
                     </div>
-                    {!isLast && (
+                    <div className="flex-1 min-w-0 pb-4">
+                      <div className="flex items-center gap-2 mb-0.5">
+                        <span
+                          className={`text-[10px] font-bold mono tracking-wider ${cfg.color}`}
+                        >
+                          {cfg.label}
+                        </span>
+                        <span className={`text-[10px] mono ${muted}`}>
+                          {new Date(p.ts).toLocaleTimeString()}
+                        </span>
+                      </div>
                       <div
-                        className={`flex-1 w-px mt-1 ${
-                          isDark ? "bg-slate-800" : "bg-slate-200"
-                        }`}
-                      />
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0 pb-4">
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <span
-                        className={`text-[10px] font-bold mono tracking-wider ${cfg.color}`}
+                        className={`text-xs ${
+                          isDark ? "text-slate-400" : "text-slate-600"
+                        } mono`}
                       >
-                        {cfg.label}
-                      </span>
-                      <span className={`text-[10px] mono ${muted}`}>
-                        {new Date(p.ts).toLocaleTimeString()}
-                      </span>
-                    </div>
-                    <div className={`text-xs ${isDark ? "text-slate-400" : "text-slate-600"} mono`}>
-                      {p.memoriesCount !== undefined && `memories scanned: ${p.memoriesCount}`}
-                      {p.proposalsCount !== undefined && `proposals: ${p.proposalsCount}`}
-                      {p.approvedCount !== undefined &&
-                        `approved: ${p.approvedCount} · rejected: ${p.rejectedCount ?? 0}`}
-                      {p.mergedCount !== undefined &&
-                        `merged: ${p.mergedCount} · pruned: ${p.prunedCount ?? 0}`}
-                      {p.error && <span className="text-rose-400">{p.error}</span>}
+                        {p.memoriesCount !== undefined &&
+                          `memories scanned: ${p.memoriesCount}`}
+                        {p.proposalsCount !== undefined &&
+                          `proposals: ${p.proposalsCount}`}
+                        {p.approvedCount !== undefined &&
+                          `approved: ${p.approvedCount} · rejected: ${p.rejectedCount ?? 0}`}
+                        {p.mergedCount !== undefined &&
+                          `merged: ${p.mergedCount} · pruned: ${p.prunedCount ?? 0}`}
+                        {p.error && (
+                          <span className="text-rose-400">{p.error}</span>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        {/* Stored reasoning — proposals + decisions + applied */}
+        <ReasoningSection run={run} isDark={isDark} />
+
+        {run.notes && (
+          <section>
+            <div
+              className={`text-[10px] font-semibold uppercase tracking-wider mb-2 ${muted}`}
+            >
+              Notes
+            </div>
+            <div
+              className={`text-xs ${
+                isDark ? "text-slate-400" : "text-slate-600"
+              }`}
+            >
+              {run.notes}
+            </div>
+          </section>
         )}
       </div>
     </div>
+  );
+}
+
+function ReasoningSection({ run, isDark }: { run: any; isDark: boolean }) {
+  const muted = isDark ? "text-slate-500" : "text-slate-400";
+  let details: any = null;
+  try {
+    details = run.details ? JSON.parse(run.details) : null;
+  } catch {
+    /* invalid JSON */
+  }
+
+  if (!details || !details.proposals?.length) {
+    return (
+      <section>
+        <div
+          className={`text-[10px] font-semibold uppercase tracking-wider mb-2 ${muted}`}
+        >
+          Proposals & Decisions
+        </div>
+        <div className={`text-sm ${muted}`}>
+          {run.status === "running"
+            ? "Proposals will appear here when the proposer finishes."
+            : run.proposalsCount === 0
+              ? "Proposer found nothing to change."
+              : "No stored reasoning for this run (this was likely a pre-upgrade run)."}
+        </div>
+      </section>
+    );
+  }
+
+  const decisions: any[] = details.decisions ?? [];
+  const applied: any[] = details.applied ?? [];
+  const decisionByIdx = new Map<number, any>();
+  for (const d of decisions) decisionByIdx.set(d.proposalIndex, d);
+  const appliedByIdx = new Set<number>(applied.map((a) => a.proposalIndex));
+
+  return (
+    <section>
+      <div
+        className={`text-[10px] font-semibold uppercase tracking-wider mb-3 ${muted}`}
+      >
+        Proposals & Decisions · {details.proposals.length} total
+      </div>
+      <div className="space-y-2">
+        {details.proposals.map((p: any, idx: number) => {
+          const d = decisionByIdx.get(idx);
+          const wasApplied = appliedByIdx.has(idx);
+          const outcome =
+            !d
+              ? { label: "NO DECISION", color: "text-slate-400", bg: "bg-slate-500/10", border: "border-slate-500/20" }
+              : d.approve && wasApplied
+                ? { label: "APPLIED", color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/20" }
+                : d.approve
+                  ? { label: "APPROVED (skipped)", color: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/20" }
+                  : { label: "REJECTED", color: "text-rose-400", bg: "bg-rose-500/10", border: "border-rose-500/20" };
+
+          return (
+            <div
+              key={idx}
+              className={`border rounded-lg p-3 ${
+                isDark
+                  ? "bg-slate-900/50 border-slate-800"
+                  : "bg-slate-50 border-slate-200"
+              }`}
+            >
+              <div className="flex items-center gap-2 mb-1.5">
+                <span
+                  className={`text-[10px] px-1.5 py-0.5 rounded border font-semibold mono ${outcome.color} ${outcome.bg} ${outcome.border}`}
+                >
+                  {outcome.label}
+                </span>
+                <span
+                  className={`text-[10px] mono uppercase ${
+                    isDark ? "text-slate-400" : "text-slate-500"
+                  }`}
+                >
+                  {p.type}
+                </span>
+                <span className={`text-[10px] mono ml-auto ${muted}`}>
+                  #{idx}
+                </span>
+              </div>
+
+              {/* Proposal body */}
+              <div className={`text-xs space-y-1 mono`}>
+                {p.type === "merge" && (
+                  <>
+                    <div className={isDark ? "text-slate-300" : "text-slate-700"}>
+                      <span className={muted}>keep:</span> {p.keep}
+                    </div>
+                    <div className={isDark ? "text-slate-300" : "text-slate-700"}>
+                      <span className={muted}>absorb:</span>{" "}
+                      {(p.absorb ?? []).join(", ")}
+                    </div>
+                    {p.rewriteContent && (
+                      <div
+                        className={`mt-1 p-2 rounded ${
+                          isDark ? "bg-slate-950/60 text-slate-300" : "bg-white text-slate-700"
+                        } text-[11px]`}
+                      >
+                        → {p.rewriteContent}
+                      </div>
+                    )}
+                  </>
+                )}
+                {p.type === "supersede" && (
+                  <>
+                    <div className={isDark ? "text-slate-300" : "text-slate-700"}>
+                      <span className={muted}>newer:</span> {p.newer}
+                    </div>
+                    <div className={isDark ? "text-slate-300" : "text-slate-700"}>
+                      <span className={muted}>older:</span>{" "}
+                      {(p.older ?? []).join(", ")}
+                    </div>
+                  </>
+                )}
+                {p.type === "prune" && (
+                  <>
+                    <div className={isDark ? "text-slate-300" : "text-slate-700"}>
+                      <span className={muted}>memoryId:</span> {p.memoryId}
+                    </div>
+                    {p.reason && (
+                      <div className={isDark ? "text-slate-400" : "text-slate-600"}>
+                        <span className={muted}>reason:</span> {p.reason}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {/* Judge rationale */}
+              {d && (
+                <div
+                  className={`mt-2 pt-2 border-t text-[11px] ${
+                    isDark
+                      ? "border-slate-800 text-slate-400"
+                      : "border-slate-200 text-slate-600"
+                  }`}
+                >
+                  <span
+                    className={`text-[10px] font-bold mono ${
+                      d.approve
+                        ? isDark
+                          ? "text-emerald-400"
+                          : "text-emerald-600"
+                        : isDark
+                          ? "text-rose-400"
+                          : "text-rose-600"
+                    }`}
+                  >
+                    JUDGE{" "}
+                  </span>
+                  {d.rationale}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
