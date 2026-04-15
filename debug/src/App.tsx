@@ -8,14 +8,12 @@ import {
   Activity01Icon,
   Link04Icon,
   MessageMultiple01Icon,
-  FileEditIcon,
 } from "@hugeicons/core-free-icons";
 import { api } from "../../convex/_generated/api.js";
 import { useSocket } from "./lib/useSocket.js";
 import { ChatPanel } from "./components/ChatPanel.js";
 import { AgentsPanel } from "./components/AgentsPanel.js";
 import { AutomationsPanel } from "./components/AutomationsPanel.js";
-import { DraftsPanel } from "./components/DraftsPanel.js";
 import { MemoryPanel } from "./components/MemoryPanel.js";
 import { EventsPanel } from "./components/EventsPanel.js";
 import { ConnectionsPanel } from "./components/ConnectionsPanel.js";
@@ -24,7 +22,6 @@ type View =
   | "chat"
   | "agents"
   | "automations"
-  | "drafts"
   | "memory"
   | "events"
   | "connections";
@@ -35,7 +32,6 @@ const NAV_ICONS: Record<View, any> = {
   chat: MessageMultiple01Icon,
   agents: MachineRobotIcon,
   automations: WorkflowCircle03Icon,
-  drafts: FileEditIcon,
   memory: AiBrain02Icon,
   events: Activity01Icon,
   connections: Link04Icon,
@@ -45,7 +41,6 @@ const NAV: { id: View; label: string }[] = [
   { id: "chat", label: "Chat" },
   { id: "agents", label: "Agents" },
   { id: "automations", label: "Automations" },
-  { id: "drafts", label: "Drafts" },
   { id: "memory", label: "Memory" },
   { id: "events", label: "Events" },
   { id: "connections", label: "Connections" },
@@ -220,7 +215,6 @@ export function App() {
             {view === "chat" && <ChatPanel isDark={isDark} />}
             {view === "agents" && <AgentsPanel isDark={isDark} />}
             {view === "automations" && <AutomationsPanel isDark={isDark} />}
-            {view === "drafts" && <DraftsPanel isDark={isDark} />}
             {view === "memory" && <MemoryPanel isDark={isDark} />}
             {view === "events" && <EventsPanel isDark={isDark} />}
             {view === "connections" && <ConnectionsPanel isDark={isDark} />}
