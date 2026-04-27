@@ -81,7 +81,6 @@ Built on:
 - **This was never meant to be open-sourced.** I built it for personal use and decided to share the architecture after enough people asked. It's not a product.
 - **Not optimized for cost or security.** Use at your own risk. Review the code, set your own budgets, and don't trust it with anything you wouldn't trust yourself with.
 - **I'm open to PRs for optimizations** — performance, bug fixes, DX improvements, new example integrations, better docs.
-- **Claude Agent SDK is load-bearing.** I won't merge PRs that swap it out or add workarounds to run non-Anthropic models. This template exists specifically to show what you can build on top of the SDK. If you want to run this against a different model or provider, please fork — I'll happily link to good forks from here.
 
 ---
 
