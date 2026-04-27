@@ -3,8 +3,12 @@ import prompts from "prompts";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
+// Use fileURLToPath, not URL.pathname — pathname stays URL-encoded, so a repo
+// path containing spaces (e.g. "/Volumes/Dock SSD/...") becomes "Dock%20SSD"
+// and any spawn() with cwd: ROOT fails ENOENT before exec.
+const ROOT = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const ENV_PATH = resolve(ROOT, ".env.local");
 const EXAMPLE_PATH = resolve(ROOT, ".env.example");
 
@@ -64,26 +68,43 @@ function banner(s: string) {
   console.log("━".repeat(60));
 }
 
+// Resolve how to invoke an npm-published CLI without depending on `npx` being on PATH.
+// Node's spawn() does a direct PATH lookup (no shell), which breaks for:
+//   - Windows users (npx is npx.cmd, not findable without shell:true)
+//   - Volta/fnm/asdf shims and zsh function aliases
+// When we're running under `npm run`, npm sets npm_execpath to the absolute path of
+// its CLI — invoking that with the current node binary sidesteps PATH entirely.
+function npxInvoker(): { cmd: string; leading: string[] } {
+  const npmCli = process.env.npm_execpath;
+  if (npmCli) return { cmd: process.execPath, leading: [npmCli, "exec", "--yes", "--"] };
+  return {
+    cmd: process.platform === "win32" ? "npx.cmd" : "npx",
+    leading: ["-y"],
+  };
+}
+
 async function runConvexDev(): Promise<void> {
   // If CONVEX_DEPLOYMENT is already set, `convex dev` reuses that deployment.
   // Only pass --configure new if this is a first-time setup — otherwise re-running
   // setup would silently create a new project and abandon all existing data.
   const existing = readEnv(ENV_PATH);
-  const args = existing.CONVEX_DEPLOYMENT
+  const convexArgs = existing.CONVEX_DEPLOYMENT
     ? ["convex", "dev", "--once"]
     : ["convex", "dev", "--once", "--configure", "new"];
 
-  console.log(`\nLaunching \`npx ${args.join(" ")}\` to configure your deployment.`);
+  console.log(`\nLaunching \`npx ${convexArgs.join(" ")}\` to configure your deployment.`);
   console.log("Convex will open a browser window if you're not logged in.");
   if (existing.CONVEX_DEPLOYMENT) {
     console.log(`Reusing existing deployment: ${existing.CONVEX_DEPLOYMENT}`);
   }
 
+  const { cmd, leading } = npxInvoker();
   await new Promise<void>((resolvePromise, reject) => {
-    const child = spawn("npx", args, { stdio: "inherit", cwd: ROOT });
+    const child = spawn(cmd, [...leading, ...convexArgs], { stdio: "inherit", cwd: ROOT });
     child.on("exit", (code) =>
       code === 0 ? resolvePromise() : reject(new Error(`convex dev exited ${code}`)),
     );
+    child.on("error", reject);
   });
 }
 
@@ -139,7 +160,8 @@ function runCapture(cmd: string, args: string[]): Promise<string> {
 
 async function sendblueInvoker(): Promise<{ cmd: string; leading: string[] }> {
   if (await hasBinary("sendblue")) return { cmd: "sendblue", leading: [] };
-  return { cmd: "npx", leading: ["-y", "@sendblue/cli"] };
+  const { cmd, leading } = npxInvoker();
+  return { cmd, leading: [...leading, "@sendblue/cli"] };
 }
 
 interface SendblueKeys {
@@ -524,6 +546,20 @@ re-pasting into Sendblue every time. For a stable URL, pick one of:
   if (env.CONVEX_URL?.includes("example.convex.cloud")) delete env.CONVEX_URL;
   if (env.VITE_CONVEX_URL?.includes("example.convex.cloud")) delete env.VITE_CONVEX_URL;
   writeEnv(ENV_PATH, env);
+
+  // Convex's CLI bails with "Found multiple ... environment variables in
+  // .env.local" when more than one key from its expected set
+  // (CONVEX_URL, VITE_CONVEX_URL, NEXT_PUBLIC_CONVEX_URL, ...) is present —
+  // even if all are empty. Our .env.example lists both CONVEX_URL and
+  // VITE_CONVEX_URL, so writeEnv emits both as empty placeholders. Strip
+  // VITE_CONVEX_URL before `convex dev` runs so it sees a single matching
+  // key; the post-convex sync below restores VITE_CONVEX_URL with the real
+  // deployment URL.
+  if (answers.runConvex) {
+    const contents = readFileSync(ENV_PATH, "utf8");
+    const stripped = contents.replace(/^VITE_CONVEX_URL=.*\r?\n?/m, "");
+    if (stripped !== contents) writeFileSync(ENV_PATH, stripped);
+  }
 
   banner("Claude authentication");
   console.log(`This project uses your Claude Code subscription — no Anthropic API key needed.
