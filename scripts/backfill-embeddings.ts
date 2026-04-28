@@ -38,7 +38,9 @@ let totalScanned = 0;
 for (const lifecycle of ["active", "archived"] as const) {
   console.log(`\nScanning ${lifecycle} records for missing embeddings…`);
   // Loop until the query returns 0 — each pass refreshes since we patched
-  // earlier rows out of the "no embedding" set.
+  // earlier rows out of the "no embedding" set. Bail if a pass makes zero
+  // progress (every record in the batch failed) so a rate-limited or
+  // misconfigured provider can't pin us in an infinite refetch loop.
   while (true) {
     const records = await convex.query(api.memoryRecords.withoutEmbedding, {
       lifecycle,
@@ -48,26 +50,38 @@ for (const lifecycle of ["active", "archived"] as const) {
     totalScanned += records.length;
     console.log(`  batch: ${records.length} records`);
 
+    let passSucceeded = 0;
+    let passFailed = 0;
     for (const r of records) {
       try {
         const vec = await embed(r.content);
         if (!vec) {
           console.warn(`    ✗ ${r.memoryId}: embed() returned null`);
-          totalFailed++;
+          passFailed++;
           continue;
         }
         await convex.mutation(api.memoryRecords.setEmbedding, {
           memoryId: r.memoryId,
           embedding: vec,
         });
-        totalSucceeded++;
+        console.log(`    ✓ ${r.memoryId} (${r.tier}/${r.segment})`);
+        passSucceeded++;
       } catch (err) {
         console.warn(
           `    ✗ ${r.memoryId}:`,
           err instanceof Error ? err.message : String(err),
         );
-        totalFailed++;
+        passFailed++;
       }
+    }
+    totalSucceeded += passSucceeded;
+    totalFailed += passFailed;
+
+    if (passSucceeded === 0) {
+      console.warn(
+        `  Pass made no progress (${passFailed} failed). Stopping — fix the underlying error and re-run.`,
+      );
+      break;
     }
   }
 }
