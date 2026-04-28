@@ -151,6 +151,41 @@ export const search = query({
   },
 });
 
+// Records that were written before an embeddings provider was configured
+// have no embedding and are invisible to vector search. Surface them so a
+// backfill script can re-embed and patch.
+export const withoutEmbedding = query({
+  args: { lifecycle: v.optional(lifecycleV), limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const lifecycle = args.lifecycle ?? "active";
+    const limit = args.limit ?? 200;
+    const candidates = await ctx.db
+      .query("memoryRecords")
+      .withIndex("by_lifecycle", (idx) => idx.eq("lifecycle", lifecycle))
+      .order("desc")
+      .take(1000);
+    return candidates
+      .filter((r) => !r.embedding || r.embedding.length === 0)
+      .slice(0, limit);
+  },
+});
+
+// Patch a single record's embedding without touching content/metadata.
+// Used by the backfill script and (eventually) any re-embed-on-content-change
+// path. Separate from upsert because upsert requires a full record payload.
+export const setEmbedding = mutation({
+  args: { memoryId: v.string(), embedding: v.array(v.float64()) },
+  handler: async (ctx, args) => {
+    const target = await ctx.db
+      .query("memoryRecords")
+      .withIndex("by_memory_id", (q) => q.eq("memoryId", args.memoryId))
+      .unique();
+    if (!target) return null;
+    await ctx.db.patch(target._id, { embedding: args.embedding });
+    return target._id;
+  },
+});
+
 export const markAccessed = mutation({
   args: { memoryId: v.string() },
   handler: async (ctx, args) => {
