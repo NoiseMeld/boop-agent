@@ -288,14 +288,17 @@ export function ComposioSection({ isDark }: { isDark: boolean }) {
               message: err.error,
               setupUrl: err.setupUrl ?? COMPOSIO_DASHBOARD_URL,
             });
+            setBusy(null);
             return;
           }
           showToast(`Authorize failed: ${err?.error ?? r.statusText}`);
+          setBusy(null);
           return;
         }
         const { redirectUrl } = await r.json();
         if (!redirectUrl) {
           showToast("Composio did not return a redirect URL.");
+          setBusy(null);
           return;
         }
         const w = 600;
