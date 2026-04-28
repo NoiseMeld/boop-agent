@@ -117,6 +117,95 @@ function hasBinary(name: string): Promise<boolean> {
   });
 }
 
+// ngrok stores its config (including the authtoken) at a platform-specific path.
+function ngrokConfigPath(): string {
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+  if (process.platform === "darwin")
+    return resolve(home, "Library/Application Support/ngrok/ngrok.yml");
+  if (process.platform === "win32")
+    return resolve(process.env.LOCALAPPDATA ?? home, "ngrok/ngrok.yml");
+  return resolve(home, ".config/ngrok/ngrok.yml");
+}
+
+function ngrokHasAuthtoken(): boolean {
+  const p = ngrokConfigPath();
+  if (!existsSync(p)) return false;
+  return /^\s*authtoken:\s*\S+/m.test(readFileSync(p, "utf8"));
+}
+
+// Install ngrok if missing. macOS uses Homebrew; other platforms get
+// printed instructions since there's no consistent package manager. Returns
+// true if ngrok is available on PATH after this call.
+async function installNgrokIfNeeded(): Promise<boolean> {
+  if (await hasBinary("ngrok")) return true;
+
+  console.log(`\nngrok isn't installed.`);
+  if (process.platform === "darwin" && (await hasBinary("brew"))) {
+    const { proceed } = await prompts({
+      type: "confirm",
+      name: "proceed",
+      message: "Install ngrok now via Homebrew (brew install ngrok)?",
+      initial: true,
+    });
+    if (proceed) {
+      try {
+        await runInherit("brew", ["install", "ngrok"]);
+      } catch (err) {
+        console.log(`\n⚠ brew install failed: ${err}`);
+      }
+      if (await hasBinary("ngrok")) return true;
+    }
+  } else if (process.platform === "darwin") {
+    console.log(`Homebrew isn't installed either. Install Homebrew from https://brew.sh, then re-run setup.`);
+  } else {
+    console.log(`Download ngrok for your platform: https://ngrok.com/download`);
+    console.log(`After installing, re-run setup.`);
+  }
+  return false;
+}
+
+// Authenticate ngrok with a free token if not already done.
+async function setupNgrokAuthtokenIfNeeded(): Promise<void> {
+  if (ngrokHasAuthtoken()) {
+    console.log(`✓ ngrok already authenticated.`);
+    return;
+  }
+  console.log(`\nngrok needs a free authtoken to start tunnels.`);
+  const { proceed } = await prompts({
+    type: "confirm",
+    name: "proceed",
+    message: "Open the ngrok dashboard and paste a token now?",
+    initial: true,
+  });
+  if (!proceed) {
+    console.log(
+      `\nSkipped. Get a free token at https://dashboard.ngrok.com/get-started/your-authtoken\n  then run: ngrok config add-authtoken <token>`,
+    );
+    return;
+  }
+  const url = "https://dashboard.ngrok.com/get-started/your-authtoken";
+  console.log(`\nOpening ${url}`);
+  openInBrowser(url);
+  const { token } = await prompts({
+    type: "password",
+    name: "token",
+    message: "Paste your ngrok authtoken (leave blank to skip):",
+    initial: "",
+  });
+  if (!token) {
+    console.log(
+      `\nSkipped. Run \`ngrok config add-authtoken <token>\` later when you have one.`,
+    );
+    return;
+  }
+  try {
+    await runInherit("ngrok", ["config", "add-authtoken", String(token).trim()]);
+    console.log(`✓ ngrok authtoken saved.`);
+  } catch (err) {
+    console.log(`\n⚠ Failed to save authtoken: ${err}`);
+  }
+}
+
 function openInBrowser(url: string): void {
   const cmd =
     process.platform === "darwin"
@@ -547,6 +636,13 @@ OpenAI works too if you already have a key.
     );
     (answers as any).VOYAGE_API_KEY = VOYAGE_API_KEY || existingVoyage;
     (answers as any).OPENAI_API_KEY = "";
+    if (VOYAGE_API_KEY) {
+      console.log(`\n  Heads up: Voyage's free tier rate-limits accounts WITHOUT a payment
+  method on file to 3 RPM / 10K TPM — fine for chat, but bulk operations
+  (like \`npm run backfill-embeddings\`) hit it instantly. Adding a card at
+  https://dashboard.voyageai.com/organization/billing keeps you on the
+  200M free tokens but unlocks normal rate limits.`);
+    }
   } else if (embedMode === "openai") {
     console.log(`\nOpening ${openaiKeysUrl} — create an API key there.`);
     console.log(`(If the browser doesn't open, copy the URL above.)\n`);
@@ -637,6 +733,15 @@ re-pasting into Sendblue every time. For a stable URL, pick one of:
     (answers as any).NGROK_DOMAIN = "";
   }
 
+  // Install + authenticate ngrok now if the user picked an ngrok-based tunnel.
+  // Without this, `npm run dev` would print install hints and run without a
+  // public URL, breaking iMessage replies until the user fixes it manually.
+  if (tunnelChoice === "free" || tunnelChoice === "ngrok-domain") {
+    banner("ngrok — install + authenticate");
+    const installed = await installNgrokIfNeeded();
+    if (installed) await setupNgrokAuthtokenIfNeeded();
+  }
+
   const env: Record<string, string> = { ...existing, ...answers };
   delete (env as any).runConvex;
   if (!env.PUBLIC_URL) env.PUBLIC_URL = `http://localhost:${env.PORT ?? "3456"}`;
@@ -697,49 +802,47 @@ You can override with ANTHROPIC_API_KEY in .env.local if you'd rather use an API
   const port = answers.PORT ?? "3456";
   banner("You're set up. Here's how to actually run it.");
   console.log(`
-Before you start: install ngrok (one-time).
-
-  brew install ngrok                           # macOS
-  # or download:  https://ngrok.com/download
-  ngrok config add-authtoken <your-token>      # free at https://dashboard.ngrok.com
-
-⚠ ngrok's FREE plan gives you a NEW URL every restart. That means
-  re-pasting into Sendblue every time.  For anything beyond a demo,
-  use a stable URL:
-    • ngrok paid plan (reserved domain), or
-    • Cloudflare Tunnel: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
-
-Then run ONE command:
+Run ONE command:
 
   npm run dev
 
 That starts the server, Convex watcher, debug dashboard, AND ngrok all
 together — color-prefixed output so you can tell who's saying what. Once
-the tunnel is live, you'll see a banner with your public URL.
-
-Wire up Sendblue (one-time, takes ~30 seconds):
-
-  1. Copy the "Sendblue webhook" URL printed by ngrok.
-  2. Sendblue dashboard → API Settings → Webhook Configuration
-  3. Add it as an INBOUND MESSAGE webhook.
-  4. Paste the URL. Save.
+the tunnel is live, you'll see a banner with your public URL${
+    tunnelChoice === "free"
+      ? ", and the\nSendblue inbound webhook gets registered automatically."
+      : "."
+  }
 
 Test it:
   • Open http://localhost:5173 for the debug dashboard (Chat tab works
     without Sendblue).
   • Or text your Sendblue number from a different phone. The agent replies.
 
-Gotcha to double-check:
+${
+  tunnelChoice === "free"
+    ? `⚠ Free ngrok gives you a NEW URL every restart. The webhook auto-registers
+  with Sendblue each time, so it Just Works for dev — but for anything
+  beyond a demo, use a stable URL (\`npm run setup\` → ngrok reserved
+  domain, or Cloudflare Tunnel).
+
+`
+    : ""
+}Gotcha to double-check:
   SENDBLUE_FROM_NUMBER in .env.local must be your Sendblue-provisioned
   number (the one people text TO), NOT your personal cell. Sendblue
   rejects sends with "Cannot send messages to self" or "missing required
   parameter: from_number" otherwise.
 
 Integrations (via Composio):
-  1. Set COMPOSIO_API_KEY in .env.local (get one at https://app.composio.dev/developers?utm_source=chris&utm_medium=youtube&utm_campaign=collab).
-  2. Open the debug dashboard → Connections tab.
-  3. Click Connect on any toolkit (Gmail, Slack, GitHub, Linear, Notion, …).
-  4. Composio handles OAuth; the toolkit becomes available to the agent.
+  1. Open http://localhost:5173 → Connections tab once dev is running.
+  2. Click Connect on any toolkit (Gmail, Slack, GitHub, Linear, Notion, …).
+  3. Composio handles OAuth; the toolkit becomes available to the agent.
+
+Memory backfill (only if you added an embeddings key after creating
+records that have no embedding):
+
+  npm run backfill-embeddings
 `);
 }
 
