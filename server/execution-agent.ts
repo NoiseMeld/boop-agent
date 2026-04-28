@@ -1,4 +1,6 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { api } from "../convex/_generated/api.js";
 import { convex } from "./convex-client.js";
 import { broadcast } from "./broadcast.js";
@@ -238,4 +240,32 @@ export async function retryAgent(agentId: string): Promise<SpawnResult | null> {
 
 export function availableIntegrations(): string[] {
   return listIntegrations().map((i) => i.name);
+}
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+}
+
+// Enumerate skills the execution agent will load via settingSources: ["project"].
+// We surface these to the dispatcher (interaction-agent) so it knows what
+// playbooks its sub-agents can invoke and can hint at them in spawn tasks.
+export function availableSkills(): SkillInfo[] {
+  const skillsDir = resolve(process.cwd(), ".claude/skills");
+  if (!existsSync(skillsDir)) return [];
+  const skills: SkillInfo[] = [];
+  for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
+    // Allow symlinks too — the convex agent skills are symlinked from
+    // .agents/skills/ into .claude/skills/, so isDirectory() returns false.
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+    const skillFile = resolve(skillsDir, entry.name, "SKILL.md");
+    if (!existsSync(skillFile)) continue;
+    const text = readFileSync(skillFile, "utf8");
+    const fm = text.match(/^---\n([\s\S]+?)\n---/);
+    if (!fm) continue;
+    const name = fm[1].match(/^name:\s*(.+)$/m)?.[1].trim() ?? entry.name;
+    const description = fm[1].match(/^description:\s*(.+)$/m)?.[1].trim() ?? "";
+    skills.push({ name, description });
+  }
+  return skills.sort((a, b) => a.name.localeCompare(b.name));
 }

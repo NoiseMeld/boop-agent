@@ -4,7 +4,7 @@ import { api } from "../convex/_generated/api.js";
 import { convex } from "./convex-client.js";
 import { createMemoryMcp } from "./memory/tools.js";
 import { extractAndStore } from "./memory/extract.js";
-import { availableIntegrations, spawnExecutionAgent } from "./execution-agent.js";
+import { availableIntegrations, availableSkills, spawnExecutionAgent } from "./execution-agent.js";
 import { createAutomationMcp } from "./automation-tools.js";
 import { createDraftDecisionMcp } from "./draft-tools.js";
 import { broadcast } from "./broadcast.js";
@@ -86,6 +86,13 @@ Drafts:
 - Never claim something was sent unless send_draft returned success.
 
 Available integrations for spawn_agent: {{INTEGRATIONS}}
+
+Skills your spawned executors can use (Claude Code SKILL.md playbooks loaded
+from .claude/skills/). When a user's request matches one, name the skill in
+your spawn_agent task so the executor knows to invoke it. If the user asks
+"what skills do you have?" or "can you use claude code skills?", answer with
+this list — they're available via your sub-agents, not directly to you:
+{{SKILLS}}
 
 Format: Plain iMessage-friendly text. Markdown sparingly. Keep replies under ~400 chars when you can.`;
 
@@ -201,10 +208,16 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
     .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
     .join("\n");
 
+  const skills = availableSkills();
+  const skillsBlock =
+    skills.length === 0
+      ? "(none — drop SKILL.md files into .claude/skills/<name>/ to add)"
+      : skills.map((s) => `- ${s.name} — ${s.description}`).join("\n");
+
   const systemPrompt = INTERACTION_SYSTEM.replace(
     "{{INTEGRATIONS}}",
     integrations.join(", ") || "(no integrations configured yet)",
-  );
+  ).replace("{{SKILLS}}", skillsBlock);
 
   const prompt = historyBlock
     ? `Prior turns:\n${historyBlock}\n\nCurrent message:\n${opts.content}`
