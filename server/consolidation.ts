@@ -2,6 +2,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { api } from "../convex/_generated/api.js";
 import { convex } from "./convex-client.js";
 import { broadcast } from "./broadcast.js";
+import { embed } from "./embeddings.js";
 import { aggregateUsageFromResult, EMPTY_USAGE, type UsageTotals } from "./usage.js";
 
 function randomId(prefix: string): string {
@@ -323,6 +324,13 @@ export async function runConsolidation(trigger = "scheduled"): Promise<{
         if (p.type === "merge" && p.keep && p.absorb?.length && p.rewriteContent) {
           const keep = memories.find((m) => m.memoryId === p.keep);
           if (!keep) continue;
+          // Content is being rewritten — re-embed so vector search matches
+          // the new text. Without this, the merged record keeps the keep's
+          // old embedding, which now points at content that no longer exists
+          // (silent recall drift). embed() returns null if no provider is
+          // configured; in that case we let upsert preserve the existing
+          // embedding rather than blocking the merge entirely.
+          const newEmbedding = await embed(p.rewriteContent);
           await convex.mutation(api.memoryRecords.upsert, {
             memoryId: keep.memoryId,
             content: p.rewriteContent,
@@ -331,6 +339,7 @@ export async function runConsolidation(trigger = "scheduled"): Promise<{
             importance: keep.importance,
             decayRate: keep.decayRate,
             supersedes: p.absorb,
+            embedding: newEmbedding ?? undefined,
           });
           merged++;
           applied.push({
