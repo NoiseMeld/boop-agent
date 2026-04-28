@@ -184,6 +184,21 @@ ${C.dim}  Install:   brew install ngrok         (macOS)
   }
 }
 
+// Memory's recall() needs an embeddings provider to do vector search. Without
+// one it falls back to literal substring matching, which misses most natural
+// queries — the symptom looks like "memory isn't sticking" even though writes
+// succeed. Warn loudly so this doesn't bite people who skipped it in setup.
+if (!envVars.VOYAGE_API_KEY && !envVars.OPENAI_API_KEY) {
+  console.log(`
+${C.banner}! Memory recall will be unreliable — no embeddings key set.${C.reset}
+${C.dim}  Without VOYAGE_API_KEY or OPENAI_API_KEY in .env.local, recall falls
+  back to literal substring matching, which misses most natural queries
+  (asking "what's my name?" won't find "User's full name is …").
+  Voyage's free tier (50M tokens, no card): https://dashboard.voyageai.com/api-keys
+  Run \`npm run setup\` to wire it up, or add VOYAGE_API_KEY=... to .env.local.${C.reset}
+`);
+}
+
 console.log(`\nBoop dev starting on port ${port}. Ctrl-C to stop everything.\n`);
 
 // Background "new-version available?" check. Runs concurrently with the

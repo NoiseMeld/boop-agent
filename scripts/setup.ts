@@ -479,6 +479,105 @@ Before you start:
     );
   }
 
+  // ---- Embeddings (vector search for memory) ------------------------------
+  banner("Memory — vector search (recommended)");
+  console.log(`
+Boop's memory uses semantic vector search to find related memories.
+Without an embeddings provider, recall falls back to LITERAL substring
+matching — asking "what's my name?" won't match a memory like
+"User's full name is Carl Michael Benson" because the substrings don't
+overlap. In practice, memory will appear broken.
+
+Voyage AI is recommended (free tier: 50M tokens, no card required).
+OpenAI works too if you already have a key.
+`);
+
+  const voyageDashUrl = "https://dashboard.voyageai.com/api-keys";
+  const openaiKeysUrl = "https://platform.openai.com/api-keys";
+  const existingVoyage = existing.VOYAGE_API_KEY ?? "";
+  const existingOpenAI = existing.OPENAI_API_KEY ?? "";
+  const hasEmbeddings = Boolean(existingVoyage || existingOpenAI);
+
+  const { embedMode } = await prompts(
+    {
+      type: "select",
+      name: "embedMode",
+      message: hasEmbeddings
+        ? "Embeddings key detected. Keep it or replace?"
+        : "Set up embeddings now? (recommended for memory to work properly)",
+      choices: hasEmbeddings
+        ? [
+            { title: "Keep existing key", value: "keep" },
+            { title: "Replace with Voyage (opens dashboard)", value: "voyage" },
+            { title: "Replace with OpenAI (opens dashboard)", value: "openai" },
+            { title: "Skip — clear existing keys", value: "skip" },
+          ]
+        : [
+            { title: "Yes — Voyage (recommended, free tier)", value: "voyage" },
+            { title: "Yes — OpenAI", value: "openai" },
+            { title: "Skip — memory recall will be unreliable", value: "skip" },
+          ],
+      initial: 0,
+    },
+    {
+      onCancel: () => {
+        console.log("Setup cancelled.");
+        process.exit(1);
+      },
+    },
+  );
+
+  if (embedMode === "voyage") {
+    console.log(`\nOpening ${voyageDashUrl} — sign up (free) and create a key.`);
+    console.log(`(If the browser doesn't open, copy the URL above.)\n`);
+    openInBrowser(voyageDashUrl);
+    const { VOYAGE_API_KEY } = await prompts(
+      {
+        type: "password",
+        name: "VOYAGE_API_KEY",
+        message: "Paste your Voyage API key (leave blank to skip):",
+        initial: "",
+      },
+      {
+        onCancel: () => {
+          console.log("Setup cancelled.");
+          process.exit(1);
+        },
+      },
+    );
+    (answers as any).VOYAGE_API_KEY = VOYAGE_API_KEY || existingVoyage;
+    (answers as any).OPENAI_API_KEY = "";
+  } else if (embedMode === "openai") {
+    console.log(`\nOpening ${openaiKeysUrl} — create an API key there.`);
+    console.log(`(If the browser doesn't open, copy the URL above.)\n`);
+    openInBrowser(openaiKeysUrl);
+    const { OPENAI_API_KEY } = await prompts(
+      {
+        type: "password",
+        name: "OPENAI_API_KEY",
+        message: "Paste your OpenAI API key (leave blank to skip):",
+        initial: "",
+      },
+      {
+        onCancel: () => {
+          console.log("Setup cancelled.");
+          process.exit(1);
+        },
+      },
+    );
+    (answers as any).OPENAI_API_KEY = OPENAI_API_KEY || existingOpenAI;
+    (answers as any).VOYAGE_API_KEY = "";
+  } else if (embedMode === "keep") {
+    (answers as any).VOYAGE_API_KEY = existingVoyage;
+    (answers as any).OPENAI_API_KEY = existingOpenAI;
+  } else {
+    (answers as any).VOYAGE_API_KEY = "";
+    (answers as any).OPENAI_API_KEY = "";
+    console.log(
+      `\nSkipped. Memory recall will use substring matching until VOYAGE_API_KEY (or OPENAI_API_KEY) is set in .env.local.`,
+    );
+  }
+
   // ---- Tunnel configuration ------------------------------------------------
   banner("Tunnel — public URL for Sendblue to reach your server");
   console.log(`
