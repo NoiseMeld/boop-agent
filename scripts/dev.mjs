@@ -184,21 +184,6 @@ ${C.dim}  Install:   brew install ngrok         (macOS)
   }
 }
 
-// Memory's recall() needs an embeddings provider to do vector search. Without
-// one it falls back to literal substring matching, which misses most natural
-// queries — the symptom looks like "memory isn't sticking" even though writes
-// succeed. Warn loudly so this doesn't bite people who skipped it in setup.
-if (!envVars.VOYAGE_API_KEY && !envVars.OPENAI_API_KEY) {
-  console.log(`
-${C.banner}! Memory recall will be unreliable — no embeddings key set.${C.reset}
-${C.dim}  Without VOYAGE_API_KEY or OPENAI_API_KEY in .env.local, recall falls
-  back to literal substring matching, which misses most natural queries
-  (asking "what's my name?" won't find "User's full name is …").
-  Voyage's free tier (50M tokens, no card): https://dashboard.voyageai.com/api-keys
-  Run \`npm run setup\` to wire it up, or add VOYAGE_API_KEY=... to .env.local.${C.reset}
-`);
-}
-
 console.log(`\nBoop dev starting on port ${port}. Ctrl-C to stop everything.\n`);
 
 // Background "new-version available?" check. Runs concurrently with the
@@ -261,6 +246,27 @@ async function autoRegisterWebhook(publicUrl) {
   await new Promise((r) => child.on("exit", r));
 }
 
+async function autoRegisterComposioWebhook(publicUrl) {
+  if (envVars.COMPOSIO_AUTO_WEBHOOK === "false") return;
+  if (!envVars.COMPOSIO_API_KEY) return;
+  const prefix = `${C.ngrok}composio${C.reset} │ `;
+  const child = spawn("npx", ["tsx", "scripts/composio-webhook.ts", publicUrl], {
+    cwd: root,
+    env: { ...process.env },
+  });
+  child.stdout.on("data", (d) => {
+    for (const line of d.toString().split("\n")) {
+      if (line.trim()) process.stdout.write(prefix + line + "\n");
+    }
+  });
+  child.stderr.on("data", (d) => {
+    for (const line of d.toString().split("\n")) {
+      if (line.trim()) process.stdout.write(prefix + line + "\n");
+    }
+  });
+  await new Promise((r) => child.on("exit", r));
+}
+
 Promise.all([
   serverChild.ready,
   convexChild.ready,
@@ -275,6 +281,10 @@ Promise.all([
         if (!ngrokDomain) {
           await autoRegisterWebhook(ngrokUrl);
         }
+        // Composio webhook subscription is fully programmatic (PATCHable),
+        // so we can refresh it on every restart regardless of whether the
+        // domain is reserved.
+        await autoRegisterComposioWebhook(ngrokUrl);
         showBanner(ngrokUrl, Boolean(ngrokDomain));
       } else {
         console.log(

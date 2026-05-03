@@ -70,6 +70,7 @@ export default defineSchema({
       v.literal("completed"),
       v.literal("failed"),
       v.literal("cancelled"),
+      v.literal("paused"),
     ),
     result: v.optional(v.string()),
     error: v.optional(v.string()),
@@ -97,6 +98,7 @@ export default defineSchema({
       v.literal("consolidation-proposer"),
       v.literal("consolidation-adversary"),
       v.literal("consolidation-judge"),
+      v.literal("proactive"),
     ),
     conversationId: v.optional(v.string()),
     turnId: v.optional(v.string()),
@@ -125,6 +127,10 @@ export default defineSchema({
       v.literal("error"),
     ),
     toolName: v.optional(v.string()),
+    // Composio account aliases targeted by this tool call (e.g. ["gmail_charry-fusc"]).
+    // Populated when the input names a specific connected account, so multi-account
+    // toolkits make it visible which inbox / workspace was actually hit.
+    accounts: v.optional(v.array(v.string())),
     content: v.string(),
     createdAt: v.number(),
   }).index("by_agent", ["agentId"]),
@@ -146,6 +152,11 @@ export default defineSchema({
     task: v.string(),
     integrations: v.array(v.string()),
     schedule: v.string(),
+    // IANA timezone the cron expression is evaluated in. Stored at create
+    // time so changing the user's global timezone later doesn't shift
+    // existing automations. Optional for backwards compatibility — pre-TZ
+    // automations fall back to the user's current setting at run time.
+    timezone: v.optional(v.string()),
     enabled: v.boolean(),
     conversationId: v.optional(v.string()),
     notifyConversationId: v.optional(v.string()),
@@ -199,6 +210,15 @@ export default defineSchema({
   })
     .index("by_run_id", ["runId"])
     .index("by_status", ["status"]),
+
+  // Runtime overrides for things normally pinned by env vars (e.g. the Claude
+  // model). Lets the user say "use opus" via iMessage and have the next agent
+  // run respect it without a redeploy.
+  settings: defineTable({
+    key: v.string(),
+    value: v.string(),
+    updatedAt: v.number(),
+  }).index("by_key", ["key"]),
 
   automationRuns: defineTable({
     runId: v.string(),

@@ -62,6 +62,12 @@ function writeEnv(path: string, env: Record<string, string>): void {
   writeFileSync(path, out.trim() + "\n");
 }
 
+function cleanConvexUrlEnv(path: string): void {
+  const envContent = readFileSync(path, "utf8");
+  const updated = envContent.replace(/^VITE_CONVEX_URL=.*(\r?\n)?/gm, "");
+  writeFileSync(path, updated);
+}
+
 function banner(s: string) {
   console.log("\n" + "━".repeat(60));
   console.log("  " + s);
@@ -428,7 +434,7 @@ What this does:
 Before you start:
   • A Claude Code subscription:    https://claude.com/code
   • Convex account (free tier):    https://convex.dev
-  • Sendblue (free on agent plan): https://sendblue.co
+  • Sendblue (free on agent plan): https://sendblue.com
 `);
 
   const existing = readEnv(ENV_PATH);
@@ -568,45 +574,40 @@ Before you start:
     );
   }
 
-  // ---- Embeddings (vector search for memory) ------------------------------
-  banner("Memory — vector search (recommended)");
-  console.log(`
-Boop's memory uses semantic vector search to find related memories.
-Without an embeddings provider, recall falls back to LITERAL substring
-matching — asking "what's my name?" won't match a memory like
-"User's full name is Carl Michael Benson" because the substrings don't
-overlap. In practice, memory will appear broken.
-
-Voyage AI is recommended (free tier: 50M tokens, no card required).
-OpenAI works too if you already have a key.
-`);
-
-  const voyageDashUrl = "https://dashboard.voyageai.com/api-keys";
-  const openaiKeysUrl = "https://platform.openai.com/api-keys";
+  // ---- Embedding provider --------------------------------------------------
+  banner("Memory search — embedding provider");
   const existingVoyage = existing.VOYAGE_API_KEY ?? "";
-  const existingOpenAI = existing.OPENAI_API_KEY ?? "";
-  const hasEmbeddings = Boolean(existingVoyage || existingOpenAI);
+  const existingOpenai = existing.OPENAI_API_KEY ?? "";
+  const inferredCurrent = existingVoyage
+    ? "voyage"
+    : existingOpenai
+      ? "openai"
+      : "local";
+  console.log(`
+Boop's recall() searches your stored memories by semantic similarity. Pick
+how you want to generate embeddings:
 
-  const { embedMode } = await prompts(
+  • Local  — free, runs in-process via @huggingface/transformers
+            (Xenova/bge-large-en-v1.5, 1024-dim). First run downloads
+            ~440MB and caches forever. No API key.
+  • Voyage — paid, ~$0.06/M tokens. Slightly stronger English retrieval.
+  • OpenAI — paid, ~$0.13/M tokens. Comparable to Voyage.
+
+All three produce 1024-dim vectors (compatible with the same Convex index)
+so you can switch later by adding/removing the API key.
+`);
+  const { embeddingProvider } = await prompts(
     {
       type: "select",
-      name: "embedMode",
-      message: hasEmbeddings
-        ? "Embeddings key detected. Keep it or replace?"
-        : "Set up embeddings now? (recommended for memory to work properly)",
-      choices: hasEmbeddings
-        ? [
-            { title: "Keep existing key", value: "keep" },
-            { title: "Replace with Voyage (opens dashboard)", value: "voyage" },
-            { title: "Replace with OpenAI (opens dashboard)", value: "openai" },
-            { title: "Skip — clear existing keys", value: "skip" },
-          ]
-        : [
-            { title: "Yes — Voyage (recommended, free tier)", value: "voyage" },
-            { title: "Yes — OpenAI", value: "openai" },
-            { title: "Skip — memory recall will be unreliable", value: "skip" },
-          ],
-      initial: 0,
+      name: "embeddingProvider",
+      message: "Which embedding provider should boop use?",
+      choices: [
+        { title: "Local (free, recommended)", value: "local" },
+        { title: "Voyage (paid — I have a key)", value: "voyage" },
+        { title: "OpenAI (paid — I have a key)", value: "openai" },
+      ],
+      initial:
+        inferredCurrent === "voyage" ? 1 : inferredCurrent === "openai" ? 2 : 0,
     },
     {
       onCancel: () => {
@@ -616,62 +617,56 @@ OpenAI works too if you already have a key.
     },
   );
 
-  if (embedMode === "voyage") {
-    console.log(`\nOpening ${voyageDashUrl} — sign up (free) and create a key.`);
-    console.log(`(If the browser doesn't open, copy the URL above.)\n`);
-    openInBrowser(voyageDashUrl);
-    const { VOYAGE_API_KEY } = await prompts(
-      {
-        type: "password",
-        name: "VOYAGE_API_KEY",
-        message: "Paste your Voyage API key (leave blank to skip):",
-        initial: "",
-      },
-      {
-        onCancel: () => {
-          console.log("Setup cancelled.");
-          process.exit(1);
-        },
-      },
-    );
-    (answers as any).VOYAGE_API_KEY = VOYAGE_API_KEY || existingVoyage;
+  if (embeddingProvider === "voyage") {
+    const { VOYAGE_API_KEY } = await prompts({
+      type: "password",
+      name: "VOYAGE_API_KEY",
+      message: "Paste your Voyage API key (https://dash.voyageai.com):",
+      initial: existingVoyage,
+    });
+    (answers as any).VOYAGE_API_KEY = VOYAGE_API_KEY || "";
     (answers as any).OPENAI_API_KEY = "";
     if (VOYAGE_API_KEY) {
       console.log(`\n  Heads up: Voyage's free tier rate-limits accounts WITHOUT a payment
   method on file to 3 RPM / 10K TPM — fine for chat, but bulk operations
-  (like \`npm run backfill-embeddings\`) hit it instantly. Adding a card at
+  hit it instantly. Adding a card at
   https://dashboard.voyageai.com/organization/billing keeps you on the
   200M free tokens but unlocks normal rate limits.`);
     }
-  } else if (embedMode === "openai") {
-    console.log(`\nOpening ${openaiKeysUrl} — create an API key there.`);
-    console.log(`(If the browser doesn't open, copy the URL above.)\n`);
-    openInBrowser(openaiKeysUrl);
-    const { OPENAI_API_KEY } = await prompts(
-      {
-        type: "password",
-        name: "OPENAI_API_KEY",
-        message: "Paste your OpenAI API key (leave blank to skip):",
-        initial: "",
-      },
-      {
-        onCancel: () => {
-          console.log("Setup cancelled.");
-          process.exit(1);
-        },
-      },
-    );
-    (answers as any).OPENAI_API_KEY = OPENAI_API_KEY || existingOpenAI;
+  } else if (embeddingProvider === "openai") {
+    const { OPENAI_API_KEY } = await prompts({
+      type: "password",
+      name: "OPENAI_API_KEY",
+      message: "Paste your OpenAI API key:",
+      initial: existingOpenai,
+    });
+    (answers as any).OPENAI_API_KEY = OPENAI_API_KEY || "";
     (answers as any).VOYAGE_API_KEY = "";
-  } else if (embedMode === "keep") {
-    (answers as any).VOYAGE_API_KEY = existingVoyage;
-    (answers as any).OPENAI_API_KEY = existingOpenAI;
   } else {
+    // Local — clear any stale paid keys so embeddings.ts falls through to
+    // the local provider on next start.
     (answers as any).VOYAGE_API_KEY = "";
     (answers as any).OPENAI_API_KEY = "";
-    console.log(
-      `\nSkipped. Memory recall will use substring matching until VOYAGE_API_KEY (or OPENAI_API_KEY) is set in .env.local.`,
-    );
+
+    const { preload } = await prompts({
+      type: "confirm",
+      name: "preload",
+      message:
+        "Pre-download the local model now? (~440MB, ~30s on broadband — saves the wait on first recall)",
+      initial: true,
+    });
+    if (preload) {
+      console.log("\nDownloading Xenova/bge-large-en-v1.5… (Ctrl+C to skip)\n");
+      try {
+        await runInherit("npx", ["tsx", "scripts/preload-embeddings.ts"]);
+        console.log("✓ Local model cached.");
+      } catch (err) {
+        console.warn(
+          "Preload failed — model will download on first recall instead.",
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
   }
 
   // ---- Tunnel configuration ------------------------------------------------
@@ -759,11 +754,7 @@ re-pasting into Sendblue every time. For a stable URL, pick one of:
   // VITE_CONVEX_URL before `convex dev` runs so it sees a single matching
   // key; the post-convex sync below restores VITE_CONVEX_URL with the real
   // deployment URL.
-  if (answers.runConvex) {
-    const contents = readFileSync(ENV_PATH, "utf8");
-    const stripped = contents.replace(/^VITE_CONVEX_URL=.*\r?\n?/m, "");
-    if (stripped !== contents) writeFileSync(ENV_PATH, stripped);
-  }
+  if (answers.runConvex) cleanConvexUrlEnv(ENV_PATH);
 
   banner("Claude authentication");
   console.log(`This project uses your Claude Code subscription — no Anthropic API key needed.
@@ -781,11 +772,16 @@ You can override with ANTHROPIC_API_KEY in .env.local if you'd rather use an API
     await runConvexDev();
     const after = readEnv(ENV_PATH);
 
-    // CONVEX_DEPLOYMENT is what `convex dev` writes; derive CONVEX_URL from it
-    // so it matches even if a stale URL lingered from a previous setup.
-    const deploymentMatch = after.CONVEX_DEPLOYMENT?.match(/^([a-z]+):([\w-]+)/);
+    // CONVEX_URL or VITE_CONVEX_URL is written to .env.local as part of `convex dev`; derive CONVEX_URL from it
+    // if not available, fallback to deriving from CONVEX_DEPLOYMENT.
+    const deploymentMatch =
+      after.CONVEX_DEPLOYMENT?.match(/^([a-z]+):([\w-]+)/);
+
     if (deploymentMatch) {
-      const url = `https://${deploymentMatch[2]}.convex.cloud`;
+      const url =
+        after.CONVEX_URL ||
+        after.VITE_CONVEX_URL ||
+        `https://${deploymentMatch[2]}.convex.cloud`;
       if (after.CONVEX_URL !== url || after.VITE_CONVEX_URL !== url) {
         writeEnv(ENV_PATH, {
           ...after,
@@ -839,10 +835,11 @@ Integrations (via Composio):
   2. Click Connect on any toolkit (Gmail, Slack, GitHub, Linear, Notion, …).
   3. Composio handles OAuth; the toolkit becomes available to the agent.
 
-Memory backfill (only if you added an embeddings key after creating
-records that have no embedding):
+Memory backfill (if you switch embedding providers later, the debug UI's
+EmbeddingBanner will offer to re-embed records that have stale or
+missing vectors):
 
-  npm run backfill-embeddings
+  http://localhost:5173 → Memory tab
 `);
 }
 

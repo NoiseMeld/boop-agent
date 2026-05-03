@@ -151,41 +151,6 @@ export const search = query({
   },
 });
 
-// Records that were written before an embeddings provider was configured
-// have no embedding and are invisible to vector search. Surface them so a
-// backfill script can re-embed and patch.
-export const withoutEmbedding = query({
-  args: { lifecycle: v.optional(lifecycleV), limit: v.optional(v.number()) },
-  handler: async (ctx, args) => {
-    const lifecycle = args.lifecycle ?? "active";
-    const limit = args.limit ?? 200;
-    const candidates = await ctx.db
-      .query("memoryRecords")
-      .withIndex("by_lifecycle", (idx) => idx.eq("lifecycle", lifecycle))
-      .order("desc")
-      .take(1000);
-    return candidates
-      .filter((r) => !r.embedding || r.embedding.length === 0)
-      .slice(0, limit);
-  },
-});
-
-// Patch a single record's embedding without touching content/metadata.
-// Used by the backfill script and (eventually) any re-embed-on-content-change
-// path. Separate from upsert because upsert requires a full record payload.
-export const setEmbedding = mutation({
-  args: { memoryId: v.string(), embedding: v.array(v.float64()) },
-  handler: async (ctx, args) => {
-    const target = await ctx.db
-      .query("memoryRecords")
-      .withIndex("by_memory_id", (q) => q.eq("memoryId", args.memoryId))
-      .unique();
-    if (!target) return null;
-    await ctx.db.patch(target._id, { embedding: args.embedding });
-    return target._id;
-  },
-});
-
 export const markAccessed = mutation({
   args: { memoryId: v.string() },
   handler: async (ctx, args) => {
@@ -216,6 +181,84 @@ export const setLifecycle = mutation({
 });
 
 const COUNTS_SCAN_LIMIT = 5000;
+
+export const embeddingStats = query({
+  args: {},
+  handler: async (ctx) => {
+    const all = await ctx.db
+      .query("memoryRecords")
+      .withIndex("by_lifecycle", (q) => q.eq("lifecycle", "active"))
+      .order("desc")
+      .take(COUNTS_SCAN_LIMIT);
+    let withEmbedding = 0;
+    let withoutEmbedding = 0;
+    for (const m of all) {
+      if (m.embedding && m.embedding.length > 0) withEmbedding++;
+      else withoutEmbedding++;
+    }
+    return {
+      total: all.length,
+      withEmbedding,
+      withoutEmbedding,
+      truncated: all.length === COUNTS_SCAN_LIMIT,
+    };
+  },
+});
+
+// Cursor-based scan over active memories that yields the unembedded ones.
+// Returns at most `pageSize` rows from the underlying index, and the caller
+// is expected to walk pages via `continueCursor` until `isDone`. A given
+// page may contain fewer unembedded rows than were scanned (the rest had
+// embeddings and were filtered out).
+//
+// Why a cursor rather than a top-N sort by importance: the previous
+// implementation took 5,000 rows per call and filtered in-process, so each
+// pagination step was O(total memories). With the cursor each step is
+// O(pageSize). Re-embed throughput is unchanged (we still process every
+// unembedded row exactly once) but Convex query cost stays bounded as the
+// memory corpus grows.
+export const listUnembeddedPage = query({
+  args: {
+    cursor: v.optional(v.union(v.string(), v.null())),
+    pageSize: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const result = await ctx.db
+      .query("memoryRecords")
+      .withIndex("by_lifecycle", (q) => q.eq("lifecycle", "active"))
+      .order("desc")
+      .paginate({
+        cursor: args.cursor ?? null,
+        numItems: args.pageSize ?? 50,
+      });
+    return {
+      page: result.page
+        .filter((m) => !m.embedding || m.embedding.length === 0)
+        .map((m) => ({ memoryId: m.memoryId, content: m.content })),
+      isDone: result.isDone,
+      continueCursor: result.continueCursor,
+    };
+  },
+});
+
+// Patch just the embedding on an existing memory. Avoids re-running upsert
+// (which would touch lastAccessedAt + run supersedes processing) just to
+// back-fill a vector.
+export const setEmbedding = mutation({
+  args: {
+    memoryId: v.string(),
+    embedding: v.array(v.float64()),
+  },
+  handler: async (ctx, args) => {
+    const mem = await ctx.db
+      .query("memoryRecords")
+      .withIndex("by_memory_id", (q) => q.eq("memoryId", args.memoryId))
+      .unique();
+    if (!mem) return null;
+    await ctx.db.patch(mem._id, { embedding: args.embedding });
+    return mem._id;
+  },
+});
 
 export const countsByTier = query({
   args: {},
