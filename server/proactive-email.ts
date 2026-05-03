@@ -405,6 +405,14 @@ async function dispatchProactiveCaptureToAgent(
     return;
   }
   const conversationId = `sms:${phone}`;
+  // Inject current date/timezone into the framing so the IA doesn't default
+  // to a stale year when interpreting bare dates in the dictation. Without
+  // this, dictations like "June 11" or "next Tuesday" can land on dates a
+  // year (or more) in the past — the model's training-data prior dominates
+  // when no anchor is present. The IA's own system prompt only tells it to
+  // call get_config for timezone, but on synthetic dispatches it tends to
+  // skip that fetch and just spawn the action.
+  const tzInfo = await describeUserNow();
   // Frame the synthetic user message so the IA knows this is a hands-free
   // brain-dump capture (already stored in memory) rather than a normal user
   // text. The IA should decide on the spot: take an action via integrations,
@@ -415,6 +423,12 @@ async function dispatchProactiveCaptureToAgent(
     `[brain-dump capture from ${email.sender || "(unknown sender)"}]`,
     email.subject ? `Title: ${email.subject}` : null,
     `Dictation: ${dictation}`,
+    ``,
+    `Current local time: ${tzInfo.now} (timezone: ${tzInfo.timezone}${tzInfo.isExplicit ? "" : ", server fallback — user has not set theirs"}). Today's date is ${tzInfo.isoDate}. Use this when interpreting any date in the dictation:`,
+    `- A bare month/day ("June 11", "Aug 3") means the NEXT future occurrence relative to today's date — never the same date in a previous year.`,
+    `- "Tomorrow", "next Tuesday", "in two weeks" are relative to today's date above.`,
+    `- If the dictation gives a year explicitly, use that. Otherwise infer the next future year for the stated month/day.`,
+    `- Sanity check: any event you're about to create should be IN THE FUTURE relative to ${tzInfo.isoDate}. If your inferred date is in the past, you've inferred wrong — bump the year forward.`,
     ``,
     `This was stored in boop's memory automatically. The capture-source app`,
     `(e.g. Rapture) also files the transcription to its own note-taking`,
@@ -447,7 +461,8 @@ async function dispatchProactiveCaptureToAgent(
     `  (e.g., "cancel the meeting" when there are 3 meetings today)`,
     ``,
     `Reply format after acting:`,
-    `- "Done — created the calendar event for Tuesday 6:30 AM (Susan's surgery, Monroeville)" — past tense, what you did, key params.`,
+    `- "Done — created the calendar event for Tuesday 6:30 AM (Susan's surgery, Monroeville)" — past tense, what you did, key params (including the resolved date).`,
+    `- Always include the YEAR in the resolved date when it differs from the current year, so the user can spot a wrong inference at a glance.`,
     `- For pure observations with no action implied, stay silent. The memory`,
     `  store is enough — don't send a one-line "noted" ack on every fleeting`,
     `  thought. The user only needs to hear from you when something happened.`,
