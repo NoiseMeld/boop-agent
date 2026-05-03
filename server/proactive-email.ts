@@ -140,6 +140,7 @@ CAPTURE / BRAIN-DUMP path (action="memorize"). Some users route voice-note trans
   - "project" — work in progress on a specific named project
   - "relationship" — info about people in the user's life
   - "identity" — biographical facts about the user themselves
+- Memorize captures are ALWAYS also routed to the dispatcher agent for follow-up. You do NOT decide here whether the dictation is actionable; the dispatcher (which knows about all available integrations and the user's recent context) decides what to do with it: take an action via an integration, write the content to a note-taking destination (Google Docs, etc), or just briefly acknowledge that the note was captured. Your job is just to (a) recognize this is a capture-source email and (b) preserve the full dictation as the summary.
 - Only memorize when a preference rule explicitly names this sender as a capture source. Without such a rule, fall back to surface vs. drop on the email's content (most "notification" emails still drop).
 
 Respond with ONLY a JSON object:
@@ -382,6 +383,64 @@ function normalizeProactivePhone(raw: string): string | null {
   return null;
 }
 
+// Route a captured brain-dump dictation through the dispatcher agent so it
+// can decide whether to act (calendar/email/etc), file it to a note-taking
+// destination (Google Docs/etc), or just acknowledge. The memory is stored
+// separately by storeMemoryFromCapture before this is called, so even when
+// the IA stays silent the content is recallable later.
+async function dispatchProactiveCaptureToAgent(
+  dictation: string,
+  email: NormalizedEmail,
+): Promise<void> {
+  const raw = process.env.BOOP_USER_PHONE;
+  if (!raw) {
+    console.warn("[proactive] BOOP_USER_PHONE not set; capture stored as memory but not routed to agent");
+    return;
+  }
+  const phone = normalizeProactivePhone(raw);
+  if (!phone) {
+    console.warn(
+      `[proactive] BOOP_USER_PHONE=${JSON.stringify(raw)} doesn't look like a valid phone number; capture stored as memory but not routed to agent`,
+    );
+    return;
+  }
+  const conversationId = `sms:${phone}`;
+  // Frame the synthetic user message so the IA knows this is a hands-free
+  // brain-dump capture (already stored in memory) rather than a normal user
+  // text. The IA should decide on the spot: take an action via integrations,
+  // file the content to a note-taking destination, or just briefly confirm.
+  // Subject is included as "title" because Rapture's gateway sets it from the
+  // AI-generated note title — useful context for filing decisions.
+  const framed = [
+    `[brain-dump capture from ${email.sender || "(unknown sender)"}]`,
+    email.subject ? `Title: ${email.subject}` : null,
+    `Dictation: ${dictation}`,
+    ``,
+    `This was just stored in memory automatically. Decide whether to:`,
+    `- take a real action using a connected integration (calendar event, email draft, slack post, etc.)`,
+    `- file the content to a note-taking destination (Google Docs, etc.)`,
+    `- briefly acknowledge (1 short sentence) that you've got it`,
+    `Stay terse. The user spoke this hands-free; don't ask follow-ups unless an action genuinely needs one piece of info to proceed.`,
+  ].filter(Boolean).join("\n");
+  const reply = await handleUserMessage({
+    conversationId,
+    content: framed,
+    kind: "proactive",
+  });
+  if (reply && reply !== "(no reply)") {
+    await sendImessage(phone, reply);
+    await convex.mutation(api.messages.send, {
+      conversationId,
+      role: "assistant",
+      content: reply,
+    });
+  } else {
+    // IA chose to stay silent — that's fine for brain-dump captures because
+    // the memory is already stored. Don't force an iMessage.
+    console.log(`[proactive] IA stayed silent on capture; memory was stored, no iMessage sent`);
+  }
+}
+
 async function dispatchProactiveNotice(summary: string): Promise<void> {
   const raw = process.env.BOOP_USER_PHONE;
   if (!raw) {
@@ -523,7 +582,12 @@ export async function handleEmailEvent(event: NormalizedTriggerEvent): Promise<v
       console.log(`[proactive] memorize requested but classifier returned no content; dropping: ${email.subject}`);
       return;
     }
+    // Always do BOTH: persist the dictation as a memory (for recall later) AND
+    // route it through the dispatcher so the agent can act on actionable
+    // content, write to a note-taking destination, or just acknowledge. The
+    // dispatcher knows which integrations are connected and decides per-note.
     await storeMemoryFromCapture(summary, segment ?? "context", email);
+    await dispatchProactiveCaptureToAgent(summary, email);
     return;
   }
 
