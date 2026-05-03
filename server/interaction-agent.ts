@@ -12,6 +12,7 @@ import { getRuntimeModel } from "./runtime-config.js";
 import { broadcast } from "./broadcast.js";
 import { sendImessage } from "./sendblue.js";
 import { aggregateUsageFromResult, EMPTY_USAGE, type UsageTotals } from "./usage.js";
+import { describeUserNow } from "./timezone-config.js";
 
 const INTERACTION_SYSTEM = `You are Boop, a personal agent the user texts from iMessage.
 
@@ -151,14 +152,23 @@ will vary; route by what they're trying to accomplish, not by keyword
 matching.
 
 Time / timezone:
-The user has a saved timezone in get_config.userTimezone. Whenever your reply
-or a sub-agent's task depends on local time (deadlines, "today", "9am
-tomorrow", RSVP windows, scheduling, "in N hours"), call get_config first to
-read it. If userTimezone is null, the system is currently using
-timezoneFallback (the server's local zone, which may be wrong) — ASK the
-user once ("what timezone are you in?") and call set_timezone with their
-answer. Don't silently guess from city names mentioned in passing — confirm
-before saving.
+{{NOW_BLOCK}}
+- Use the current local time above when interpreting any bare or relative
+  date in the user's message or in a sub-agent task you spawn.
+- A bare month/day ("June 11", "Aug 3") means the NEXT future occurrence
+  relative to today's date — never the same date in a previous year.
+- "Tomorrow", "next Tuesday", "in two weeks" are relative to today's date.
+- If the user gives a year explicitly, use that. Otherwise infer the next
+  future year for the stated month/day.
+- Sanity check: any event you're about to create (calendar, reminder, etc.)
+  should be IN THE FUTURE relative to today's date. If your inferred date
+  is in the past, you've inferred wrong — bump the year forward.
+
+The user has a saved timezone in get_config.userTimezone. The current local
+time block above already uses it (or the server fallback if not set). If the
+block says "server fallback", ASK the user once ("what timezone are you in?")
+and call set_timezone with their answer. Don't silently guess from city names
+mentioned in passing — confirm before saving.
 
 Available integrations for spawn_agent: {{INTEGRATIONS}}
 
@@ -303,10 +313,19 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
       ? "(none — drop SKILL.md files into .claude/skills/<name>/ to add)"
       : skills.map((s) => `- ${s.name} — ${s.description}`).join("\n");
 
+  // Inject current local time so the IA has a date anchor for any bare or
+  // relative dates in the user's message (or sub-agent task it spawns).
+  // Without this, models default to a stale year — typically the training-
+  // data prior — for inputs like "June 11" or "next Tuesday".
+  const tzInfo = await describeUserNow();
+  const nowBlock = `Current local time: ${tzInfo.now} (timezone: ${tzInfo.timezone}${tzInfo.isExplicit ? "" : ", server fallback — user has not set theirs"}). Today's date is ${tzInfo.isoDate}.`;
+
   const systemPrompt = INTERACTION_SYSTEM.replace(
     "{{INTEGRATIONS}}",
     integrations.join(", ") || "(no integrations configured yet)",
-  ).replace("{{SKILLS}}", skillsBlock);
+  )
+    .replace("{{SKILLS}}", skillsBlock)
+    .replace("{{NOW_BLOCK}}", nowBlock);
 
   const prompt = historyBlock
     ? `Prior turns:\n${historyBlock}\n\nCurrent message:\n${opts.content}`
