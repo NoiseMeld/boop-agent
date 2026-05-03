@@ -140,7 +140,7 @@ CAPTURE / BRAIN-DUMP path (action="memorize"). Some users route voice-note trans
   - "project" — work in progress on a specific named project
   - "relationship" — info about people in the user's life
   - "identity" — biographical facts about the user themselves
-- Memorize captures are ALWAYS also routed to the dispatcher agent for follow-up. You do NOT decide here whether the dictation is actionable; the dispatcher (which knows about all available integrations and the user's recent context) decides what to do with it: take an action via an integration, write the content to a note-taking destination (Google Docs, etc), or just briefly acknowledge that the note was captured. Your job is just to (a) recognize this is a capture-source email and (b) preserve the full dictation as the summary.
+- Memorize captures are ALWAYS also routed to the dispatcher agent for follow-up. You do NOT decide here whether the dictation is actionable; the dispatcher (which knows about all available integrations and the user's recent context) decides what to do with it: take an action via an integration (calendar, email draft, slack post, etc.) or just briefly acknowledge that the note was captured. Capture-source apps typically file the dictation to their own note-taking destinations (Rapture writes to Google Docs/Drive) and boop stores it in memory, so the dispatcher should NOT redundantly re-file the content to a doc. Your job here is just to (a) recognize this is a capture-source email and (b) preserve the full dictation as the summary.
 - Only memorize when a preference rule explicitly names this sender as a capture source. Without such a rule, fall back to surface vs. drop on the email's content (most "notification" emails still drop).
 
 Respond with ONLY a JSON object:
@@ -416,11 +416,16 @@ async function dispatchProactiveCaptureToAgent(
     email.subject ? `Title: ${email.subject}` : null,
     `Dictation: ${dictation}`,
     ``,
-    `This was just stored in memory automatically. Decide whether to:`,
-    `- take a real action using a connected integration (calendar event, email draft, slack post, etc.)`,
-    `- file the content to a note-taking destination (Google Docs, etc.)`,
-    `- briefly acknowledge (1 short sentence) that you've got it`,
-    `Stay terse. The user spoke this hands-free; don't ask follow-ups unless an action genuinely needs one piece of info to proceed.`,
+    `This was just stored in boop's memory automatically. The capture-source`,
+    `app (e.g. Rapture) also files the transcription to its own note-taking`,
+    `destination (Google Docs/Drive), so don't redundantly re-file the content`,
+    `to a doc. Decide whether to:`,
+    `- take a real action using a connected integration (calendar event, email`,
+    `  draft, slack post, github issue, etc.) when the dictation implies one`,
+    `- briefly acknowledge in 1 short sentence that you got it`,
+    `Stay terse. The user spoke this hands-free; don't ask follow-ups unless`,
+    `an action genuinely needs one piece of info to proceed. Silence is fine`,
+    `if the dictation was a pure observation — the memory store is enough.`,
   ].filter(Boolean).join("\n");
   const reply = await handleUserMessage({
     conversationId,
