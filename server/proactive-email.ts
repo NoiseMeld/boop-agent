@@ -1,9 +1,12 @@
 // Webhook-driven Gmail watcher. Runs after Composio fires
 // `composio.trigger.message` for a `GMAIL_NEW_GMAIL_MESSAGE` trigger.
 // Pipeline: ignore non-Gmail → warmup-skip the first event per connection
-// → recall user preferences → cheap Haiku classifier → on important, route
-// the summary into the interaction agent as a synthetic system message so it
-// gets the same tone/spawn pipeline as a real user turn.
+// → recall user preferences → cheap Haiku classifier → branch on action:
+//   - "surface" routes the summary into the interaction agent as a synthetic
+//     system message so it gets the same tone/spawn pipeline as a real turn
+//   - "memorize" stores the email body as a memory (used when the user has a
+//     preference designating a sender as a capture/brain-dump source)
+//   - "drop" stays silent
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { api } from "../convex/_generated/api.js";
 import { convex } from "./convex-client.js";
@@ -13,6 +16,12 @@ import { sendImessage } from "./sendblue.js";
 import { ensureTrigger, getComposio, listConnectedToolkits } from "./composio.js";
 import { ensureWebhookSubscription } from "./composio-webhook.js";
 import { describeUserNow } from "./timezone-config.js";
+import { embed } from "./embeddings.js";
+import {
+  SEGMENT_DEFAULTS,
+  makeMemoryId,
+  type MemorySegment,
+} from "./memory/types.js";
 
 const TRIGGER_SLUG = "GMAIL_NEW_GMAIL_MESSAGE";
 const CLASSIFIER_MODEL = "claude-haiku-4-5-20251001";
@@ -116,13 +125,27 @@ How to tell "real personal/work request" from "cold outreach in a friendly costu
 - Automated signals (drop unless security/time-bound): from "no-reply"/"notifications"/"alerts"/"team@..." mass addresses, generic salutation, body is templated/HTML-heavy, sender domain matches a known marketing/notification service.
 - When in doubt → drop. False positives erode trust faster than missing one notice.
 
-When important=true, write a summary in 1-2 short sentences for an iMessage:
+When action="surface", write a summary in 1-2 short sentences for an iMessage:
 - Lead with what matters (who is asking what, the deadline, the action).
 - Address the user in second person ("you"). Never refer to the user in third person, even if their name appears in the email — the user IS the recipient and one of the User identities at the bottom.
 - Plain text, no markdown, no signoff.
 - Under ~200 chars when possible.
 
-Respond with ONLY a JSON object: {"important": boolean, "summary": "..."} (omit summary when important=false).`;
+CAPTURE / BRAIN-DUMP path (action="memorize"). Some users route voice-note transcriptions or notes-to-self through services that email them content (Rapture, Otter.ai, custom Shortcuts, etc). When a user preference EXPLICITLY designates a sender as a capture source (e.g. "emails from rapture@noisemeld.com are voice-note brain dumps — memorize them"), set action="memorize" instead of surface/drop. In that case:
+- "summary" must be the FULL transcribed content the user dictated (not abbreviated). The body is the gold; preserve it verbatim minus any boilerplate footer ("Sent from Rapture", unsubscribe links, etc).
+- Pick "segment" based on what the dictated content sounds like:
+  - "context" — general background, observations, fleeting thoughts (default for most brain-dump notes)
+  - "knowledge" — factual information the user wants to remember
+  - "preference" — explicit "I prefer / I want / I always do X" statements
+  - "project" — work in progress on a specific named project
+  - "relationship" — info about people in the user's life
+  - "identity" — biographical facts about the user themselves
+- Only memorize when a preference rule explicitly names this sender as a capture source. Without such a rule, fall back to surface vs. drop on the email's content (most "notification" emails still drop).
+
+Respond with ONLY a JSON object:
+- {"action": "surface", "summary": "..."} when surfacing
+- {"action": "memorize", "segment": "<segment>", "summary": "<full dictated content>"} when memorizing
+- {"action": "drop"} when dropping`;
 
 // Cached read of the proactive-enabled flag from the settings table.
 // Short TTL so toggling it from the debug UI takes effect quickly without
@@ -178,11 +201,30 @@ export async function getUserGmailIdentities(): Promise<string[]> {
   }
 }
 
+export type ClassifierAction = "surface" | "memorize" | "drop";
+
+export interface ClassifierResult {
+  action: ClassifierAction;
+  summary?: string;
+  segment?: MemorySegment;
+  usage: UsageTotals;
+}
+
+const VALID_SEGMENTS: ReadonlySet<MemorySegment> = new Set([
+  "identity",
+  "preference",
+  "correction",
+  "relationship",
+  "project",
+  "knowledge",
+  "context",
+]);
+
 export async function classifyEmailImportance(
   email: NormalizedEmail,
   preferenceLines: string[],
   options: { model?: string; recordUsage?: boolean } = {},
-): Promise<{ important: boolean; summary?: string; usage: UsageTotals }> {
+): Promise<ClassifierResult> {
   const started = Date.now();
   const model = options.model ?? CLASSIFIER_MODEL;
   const recordUsage = options.recordUsage ?? true;
@@ -229,14 +271,33 @@ export async function classifyEmailImportance(
     }
   }
 
-  let important = false;
+  let action: ClassifierAction = "drop";
   let summary: string | undefined;
+  let segment: MemorySegment | undefined;
   const match = buffer.match(/\{[\s\S]*\}/);
   if (match) {
     try {
-      const parsed = JSON.parse(match[0]) as { important?: boolean; summary?: string };
-      important = parsed.important === true;
+      const parsed = JSON.parse(match[0]) as {
+        action?: string;
+        important?: boolean; // legacy field — older prompt versions
+        summary?: string;
+        segment?: string;
+      };
+      // Prefer the new `action` field; fall back to legacy `important` so a
+      // stale cached classifier output during rollout still produces sensible
+      // routing instead of silently dropping.
+      if (parsed.action === "surface" || parsed.action === "memorize" || parsed.action === "drop") {
+        action = parsed.action;
+      } else if (parsed.important === true) {
+        action = "surface";
+      }
       summary = typeof parsed.summary === "string" ? parsed.summary.trim() : undefined;
+      if (
+        typeof parsed.segment === "string" &&
+        VALID_SEGMENTS.has(parsed.segment as MemorySegment)
+      ) {
+        segment = parsed.segment as MemorySegment;
+      }
     } catch {
       // Malformed JSON from the classifier means we drop the email — better
       // to miss a notice than spam the user with an unparsed prompt.
@@ -256,7 +317,41 @@ export async function classifyEmailImportance(
     });
   }
 
-  return { important, summary, usage };
+  return { action, summary, segment, usage };
+}
+
+async function storeMemoryFromCapture(
+  content: string,
+  segment: MemorySegment,
+  email: NormalizedEmail,
+): Promise<void> {
+  const trimmed = content.trim();
+  if (!trimmed) {
+    console.warn("[proactive] memorize: empty content; skipping");
+    return;
+  }
+  const defaults = SEGMENT_DEFAULTS[segment];
+  const memoryId = makeMemoryId();
+  const embedding = (await embed(trimmed)) ?? undefined;
+  const metadata = JSON.stringify({
+    source: "email-capture",
+    sender: email.sender,
+    subject: email.subject,
+    messageId: email.messageId,
+  });
+  await convex.mutation(api.memoryRecords.upsert, {
+    memoryId,
+    content: trimmed,
+    tier: defaults.tier,
+    segment,
+    importance: defaults.importance,
+    decayRate: defaults.decayRate,
+    embedding,
+    metadata,
+  });
+  console.log(
+    `[proactive] memorized capture (${segment}, ${trimmed.length} chars) from ${email.sender}: ${memoryId}`,
+  );
 }
 
 async function recallPreferenceLines(): Promise<string[]> {
@@ -421,11 +516,22 @@ export async function handleEmailEvent(event: NormalizedTriggerEvent): Promise<v
   }
 
   const preferences = await recallPreferenceLines();
-  const { important, summary } = await classifyEmailImportance(email, preferences);
-  if (!important || !summary) {
-    console.log(`[proactive] dropped (not important): ${email.subject}`);
+  const { action, summary, segment } = await classifyEmailImportance(email, preferences);
+
+  if (action === "memorize") {
+    if (!summary) {
+      console.log(`[proactive] memorize requested but classifier returned no content; dropping: ${email.subject}`);
+      return;
+    }
+    await storeMemoryFromCapture(summary, segment ?? "context", email);
     return;
   }
-  console.log(`[proactive] surfacing: ${summary}`);
-  await dispatchProactiveNotice(summary);
+
+  if (action === "surface" && summary) {
+    console.log(`[proactive] surfacing: ${summary}`);
+    await dispatchProactiveNotice(summary);
+    return;
+  }
+
+  console.log(`[proactive] dropped (action=${action}): ${email.subject}`);
 }
