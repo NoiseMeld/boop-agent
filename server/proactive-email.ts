@@ -3,9 +3,14 @@
 // Pipeline: ignore non-Gmail → warmup-skip the first event per connection
 // → recall user preferences → cheap Haiku classifier → branch on action:
 //   - "surface" routes the summary into the interaction agent as a synthetic
-//     system message so it gets the same tone/spawn pipeline as a real turn
-//   - "memorize" stores the email body as a memory (used when the user has a
-//     preference designating a sender as a capture/brain-dump source)
+//     system message (kind: "proactive") so it gets the IA's spawn pipeline
+//     without polluting the user-message conversation history
+//   - "memorize" routes the dictation through the interaction agent as if
+//     the user had texted it (kind: "user", same path as the Sendblue
+//     webhook handler). The IA decides per-note whether to act, ack, or
+//     stay silent; post-turn memory extraction stores facts at appropriate
+//     segments. Used when a preference designates the sender as a capture
+//     source (Rapture, Otter.ai, custom Shortcuts, etc).
 //   - "drop" stays silent
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { api } from "../convex/_generated/api.js";
@@ -16,12 +21,6 @@ import { sendImessage } from "./sendblue.js";
 import { ensureTrigger, getComposio, listConnectedToolkits } from "./composio.js";
 import { ensureWebhookSubscription } from "./composio-webhook.js";
 import { describeUserNow } from "./timezone-config.js";
-import { embed } from "./embeddings.js";
-import {
-  SEGMENT_DEFAULTS,
-  makeMemoryId,
-  type MemorySegment,
-} from "./memory/types.js";
 
 const TRIGGER_SLUG = "GMAIL_NEW_GMAIL_MESSAGE";
 const CLASSIFIER_MODEL = "claude-haiku-4-5-20251001";
@@ -133,19 +132,12 @@ When action="surface", write a summary in 1-2 short sentences for an iMessage:
 
 CAPTURE / BRAIN-DUMP path (action="memorize"). Some users route voice-note transcriptions or notes-to-self through services that email them content (Rapture, Otter.ai, custom Shortcuts, etc). When a user preference EXPLICITLY designates a sender as a capture source (e.g. "emails from rapture@noisemeld.com are voice-note brain dumps — memorize them"), set action="memorize" instead of surface/drop. In that case:
 - "summary" must be the FULL transcribed content the user dictated (not abbreviated). The body is the gold; preserve it verbatim minus any boilerplate footer ("Sent from Rapture", unsubscribe links, etc).
-- Pick "segment" based on what the dictated content sounds like:
-  - "context" — general background, observations, fleeting thoughts (default for most brain-dump notes)
-  - "knowledge" — factual information the user wants to remember
-  - "preference" — explicit "I prefer / I want / I always do X" statements
-  - "project" — work in progress on a specific named project
-  - "relationship" — info about people in the user's life
-  - "identity" — biographical facts about the user themselves
-- Memorize captures are ALWAYS also routed to the dispatcher agent for follow-up. You do NOT decide here whether the dictation is actionable; the dispatcher (which knows about all available integrations and the user's recent context) decides what to do with it: take an action via an integration (calendar, email draft, slack post, etc.) or just briefly acknowledge that the note was captured. Capture-source apps typically file the dictation to their own note-taking destinations (Rapture writes to Google Docs/Drive) and boop stores it in memory, so the dispatcher should NOT redundantly re-file the content to a doc. Your job here is just to (a) recognize this is a capture-source email and (b) preserve the full dictation as the summary.
+- The dispatcher will then route this dictation through the agent as if the user had texted it. The agent's normal flow handles dates, integrations, memory writes, action-vs-acknowledge decisions — you do not need to make any of those calls here. Just identify capture sources and extract the dictation cleanly.
 - Only memorize when a preference rule explicitly names this sender as a capture source. Without such a rule, fall back to surface vs. drop on the email's content (most "notification" emails still drop).
 
 Respond with ONLY a JSON object:
 - {"action": "surface", "summary": "..."} when surfacing
-- {"action": "memorize", "segment": "<segment>", "summary": "<full dictated content>"} when memorizing
+- {"action": "memorize", "summary": "<full dictated content>"} when memorizing
 - {"action": "drop"} when dropping`;
 
 // Cached read of the proactive-enabled flag from the settings table.
@@ -207,19 +199,8 @@ export type ClassifierAction = "surface" | "memorize" | "drop";
 export interface ClassifierResult {
   action: ClassifierAction;
   summary?: string;
-  segment?: MemorySegment;
   usage: UsageTotals;
 }
-
-const VALID_SEGMENTS: ReadonlySet<MemorySegment> = new Set([
-  "identity",
-  "preference",
-  "correction",
-  "relationship",
-  "project",
-  "knowledge",
-  "context",
-]);
 
 export async function classifyEmailImportance(
   email: NormalizedEmail,
@@ -274,7 +255,6 @@ export async function classifyEmailImportance(
 
   let action: ClassifierAction = "drop";
   let summary: string | undefined;
-  let segment: MemorySegment | undefined;
   const match = buffer.match(/\{[\s\S]*\}/);
   if (match) {
     try {
@@ -282,7 +262,6 @@ export async function classifyEmailImportance(
         action?: string;
         important?: boolean; // legacy field — older prompt versions
         summary?: string;
-        segment?: string;
       };
       // Prefer the new `action` field; fall back to legacy `important` so a
       // stale cached classifier output during rollout still produces sensible
@@ -293,12 +272,6 @@ export async function classifyEmailImportance(
         action = "surface";
       }
       summary = typeof parsed.summary === "string" ? parsed.summary.trim() : undefined;
-      if (
-        typeof parsed.segment === "string" &&
-        VALID_SEGMENTS.has(parsed.segment as MemorySegment)
-      ) {
-        segment = parsed.segment as MemorySegment;
-      }
     } catch {
       // Malformed JSON from the classifier means we drop the email — better
       // to miss a notice than spam the user with an unparsed prompt.
@@ -318,41 +291,7 @@ export async function classifyEmailImportance(
     });
   }
 
-  return { action, summary, segment, usage };
-}
-
-async function storeMemoryFromCapture(
-  content: string,
-  segment: MemorySegment,
-  email: NormalizedEmail,
-): Promise<void> {
-  const trimmed = content.trim();
-  if (!trimmed) {
-    console.warn("[proactive] memorize: empty content; skipping");
-    return;
-  }
-  const defaults = SEGMENT_DEFAULTS[segment];
-  const memoryId = makeMemoryId();
-  const embedding = (await embed(trimmed)) ?? undefined;
-  const metadata = JSON.stringify({
-    source: "email-capture",
-    sender: email.sender,
-    subject: email.subject,
-    messageId: email.messageId,
-  });
-  await convex.mutation(api.memoryRecords.upsert, {
-    memoryId,
-    content: trimmed,
-    tier: defaults.tier,
-    segment,
-    importance: defaults.importance,
-    decayRate: defaults.decayRate,
-    embedding,
-    metadata,
-  });
-  console.log(
-    `[proactive] memorized capture (${segment}, ${trimmed.length} chars) from ${email.sender}: ${memoryId}`,
-  );
+  return { action, summary, usage };
 }
 
 async function recallPreferenceLines(): Promise<string[]> {
@@ -383,94 +322,33 @@ function normalizeProactivePhone(raw: string): string | null {
   return null;
 }
 
-// Route a captured brain-dump dictation through the dispatcher agent so it
-// can decide whether to act (calendar/email/etc), file it to a note-taking
-// destination (Google Docs/etc), or just acknowledge. The memory is stored
-// separately by storeMemoryFromCapture before this is called, so even when
-// the IA stays silent the content is recallable later.
-async function dispatchProactiveCaptureToAgent(
-  dictation: string,
-  email: NormalizedEmail,
-): Promise<void> {
+// Route a captured brain-dump dictation through the dispatcher exactly the
+// way the Sendblue webhook routes inbound iMessages — same conversationId
+// scheme (sms:<phone>), same handleUserMessage call (kind defaults to "user"),
+// same outbound iMessage + persistence. The IA's normal flow handles dates,
+// integrations, action-vs-acknowledge decisions, and post-turn memory
+// extraction picks per-fact memory writes (richer than a single blob record).
+// Mirrors server/sendblue.ts:153-172.
+async function dispatchCaptureAsUserMessage(dictation: string): Promise<void> {
   const raw = process.env.BOOP_USER_PHONE;
   if (!raw) {
-    console.warn("[proactive] BOOP_USER_PHONE not set; capture stored as memory but not routed to agent");
+    console.warn("[proactive] BOOP_USER_PHONE not set; capture cannot be routed");
     return;
   }
   const phone = normalizeProactivePhone(raw);
   if (!phone) {
     console.warn(
-      `[proactive] BOOP_USER_PHONE=${JSON.stringify(raw)} doesn't look like a valid phone number; capture stored as memory but not routed to agent`,
+      `[proactive] BOOP_USER_PHONE=${JSON.stringify(raw)} doesn't look like a valid phone number; capture cannot be routed`,
     );
     return;
   }
   const conversationId = `sms:${phone}`;
-  // Inject current date/timezone into the framing so the IA doesn't default
-  // to a stale year when interpreting bare dates in the dictation. Without
-  // this, dictations like "June 11" or "next Tuesday" can land on dates a
-  // year (or more) in the past — the model's training-data prior dominates
-  // when no anchor is present. The IA's own system prompt only tells it to
-  // call get_config for timezone, but on synthetic dispatches it tends to
-  // skip that fetch and just spawn the action.
-  const tzInfo = await describeUserNow();
-  // Frame the synthetic user message so the IA knows this is a hands-free
-  // brain-dump capture (already stored in memory) rather than a normal user
-  // text. The IA should decide on the spot: take an action via integrations,
-  // file the content to a note-taking destination, or just briefly confirm.
-  // Subject is included as "title" because Rapture's gateway sets it from the
-  // AI-generated note title — useful context for filing decisions.
-  const framed = [
-    `[brain-dump capture from ${email.sender || "(unknown sender)"}]`,
-    email.subject ? `Title: ${email.subject}` : null,
-    `Dictation: ${dictation}`,
-    ``,
-    `Current local time: ${tzInfo.now} (timezone: ${tzInfo.timezone}${tzInfo.isExplicit ? "" : ", server fallback — user has not set theirs"}). Today's date is ${tzInfo.isoDate}. Use this when interpreting any date in the dictation:`,
-    `- A bare month/day ("June 11", "Aug 3") means the NEXT future occurrence relative to today's date — never the same date in a previous year.`,
-    `- "Tomorrow", "next Tuesday", "in two weeks" are relative to today's date above.`,
-    `- If the dictation gives a year explicitly, use that. Otherwise infer the next future year for the stated month/day.`,
-    `- Sanity check: any event you're about to create should be IN THE FUTURE relative to ${tzInfo.isoDate}. If your inferred date is in the past, you've inferred wrong — bump the year forward.`,
-    ``,
-    `This was stored in boop's memory automatically. The capture-source app`,
-    `(e.g. Rapture) also files the transcription to its own note-taking`,
-    `destination — so DO NOT re-file the content to a doc.`,
-    ``,
-    `ACT FIRST, ASK NEVER. The user dictated this hands-free, which means`,
-    `they've already given consent for any action implied by the content.`,
-    `Asking "want me to do X?" defeats the purpose — they already told you.`,
-    `Trust the dictation and execute. The user can correct you later via text`,
-    `if you misread the intent.`,
-    ``,
-    `Concrete rules for additive actions (just do them, no confirmation):`,
-    `- Date + time + event description → create the Google Calendar event now.`,
-    `  Use sensible defaults for missing fields (30 min duration, no location`,
-    `  if not specified, your best inference of the user's primary calendar).`,
-    `- "Remind me to X" / "Don't forget Y by Z" → create a calendar event or`,
-    `  reminder for the implied time. If only a vague time ("later", "soon",`,
-    `  "tomorrow"), pick a sensible slot and create it; the user can move it.`,
-    `- "Email/text/message [person] about [topic]" → draft and send (or for`,
-    `  email, draft + send if the recipient is unambiguously identifiable from`,
-    `  memory; otherwise draft and tell the user it's in their drafts).`,
-    `- "Add [task] to my list" or task-shaped dictation → create the task in`,
-    `  whichever task integration is connected.`,
-    `- "Post X to [channel]" → post it.`,
-    ``,
-    `Only ask first for genuinely DESTRUCTIVE or AMBIGUOUS actions:`,
-    `- Cancelling/deleting an existing event or message`,
-    `- Modifying something the user already created`,
-    `- Multiple plausible interpretations where the wrong one would be costly`,
-    `  (e.g., "cancel the meeting" when there are 3 meetings today)`,
-    ``,
-    `Reply format after acting:`,
-    `- "Done — created the calendar event for Tuesday 6:30 AM (Susan's surgery, Monroeville)" — past tense, what you did, key params (including the resolved date).`,
-    `- Always include the YEAR in the resolved date when it differs from the current year, so the user can spot a wrong inference at a glance.`,
-    `- For pure observations with no action implied, stay silent. The memory`,
-    `  store is enough — don't send a one-line "noted" ack on every fleeting`,
-    `  thought. The user only needs to hear from you when something happened.`,
-  ].filter(Boolean).join("\n");
   const reply = await handleUserMessage({
     conversationId,
-    content: framed,
-    kind: "proactive",
+    content: dictation,
+    // kind defaults to "user" — persists with role="user" so the dictation
+    // appears in conversation history, AND lets post-turn memory extraction
+    // run (kind: "proactive" would skip extraction).
   });
   if (reply && reply !== "(no reply)") {
     await sendImessage(phone, reply);
@@ -479,10 +357,6 @@ async function dispatchProactiveCaptureToAgent(
       role: "assistant",
       content: reply,
     });
-  } else {
-    // IA chose to stay silent — that's fine for brain-dump captures because
-    // the memory is already stored. Don't force an iMessage.
-    console.log(`[proactive] IA stayed silent on capture; memory was stored, no iMessage sent`);
   }
 }
 
@@ -620,19 +494,18 @@ export async function handleEmailEvent(event: NormalizedTriggerEvent): Promise<v
   }
 
   const preferences = await recallPreferenceLines();
-  const { action, summary, segment } = await classifyEmailImportance(email, preferences);
+  const { action, summary } = await classifyEmailImportance(email, preferences);
 
   if (action === "memorize") {
     if (!summary) {
       console.log(`[proactive] memorize requested but classifier returned no content; dropping: ${email.subject}`);
       return;
     }
-    // Always do BOTH: persist the dictation as a memory (for recall later) AND
-    // route it through the dispatcher so the agent can act on actionable
-    // content, write to a note-taking destination, or just acknowledge. The
-    // dispatcher knows which integrations are connected and decides per-note.
-    await storeMemoryFromCapture(summary, segment ?? "context", email);
-    await dispatchProactiveCaptureToAgent(summary, email);
+    // Route the dictation through the same dispatcher path as inbound
+    // iMessages. Post-turn memory extraction handles per-fact memory writes;
+    // the IA's normal flow handles dates, integrations, and action vs ack.
+    console.log(`[proactive] capture from ${email.sender}: routing dictation as user message (${summary.length} chars)`);
+    await dispatchCaptureAsUserMessage(summary);
     return;
   }
 
