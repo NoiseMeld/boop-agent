@@ -28,3 +28,23 @@ Process:
 2. Prefer not committing ad-hoc debug scripts at all — keep them in your shell history or a gitignored scratch dir.
 3. If you realize PII slipped in **before pushing**, amend or reset and re-commit cleanly.
 4. If it already pushed, see the recovery steps in [GitHub's sensitive data docs](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository) and rotate any exposed credentials.
+
+## Custom Skills
+
+The following custom skills are installed in `.claude/skills/` and should be invoked automatically when the user's request matches the skill's trigger conditions. Each skill's `SKILL.md` contains the full instructions.
+
+### Skill Dispatcher
+
+| Skill | Trigger When... | Path |
+|---|---|---|
+| `extract-transcript` | User shares a YouTube URL, pastes a transcript, says "summarize this video", "make a doc from this", or mentions a speaker/video | `.claude/skills/extract-transcript/SKILL.md` |
+| `extract-book` | User provides a book PDF, says "extract this book", "make notes from this PDF", or shares a book file | `.claude/skills/extract-book/SKILL.md` |
+| `extract-study` | User provides an academic paper, DOI, PubMed/arXiv link, or says "summarize this research" / "extract this study" | `.claude/skills/extract-study/SKILL.md` |
+| `extract-webpage` | User shares a URL and wants structured notes, a summary, or says "extract this page" / "save this article" | `.claude/skills/extract-webpage/SKILL.md` |
+| `clear-and-concise-humanization` | User asks to write, draft, edit, polish, revise, or rewrite ANY prose — emails, docs, posts, reports, etc. | `.claude/skills/clear-and-concise-humanization/SKILL.md` |
+| `obscura-scraper-crawler` | User needs deep web scraping, crawling multiple pages, or extracting structured data from complex/JS-heavy sites | `.claude/skills/obscura-scraper-crawler/SKILL.md` |
+
+**How skills work:**
+- When a trigger condition matches, read the corresponding `SKILL.md` for step-by-step instructions
+- Skills may reference helper scripts (e.g. `scripts/*.py`) — run them as instructed
+- Skills that produce documents save to Google Drive unless the user specifies otherwise
