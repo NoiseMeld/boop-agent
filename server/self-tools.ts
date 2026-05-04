@@ -58,9 +58,11 @@ export function createSelfMcp() {
       ),
       tool(
         "set_timezone",
-        `Save the user's timezone so Boop can reason about deadlines, "today", "9am tomorrow", and other local-time references correctly. Accepts an IANA timezone ID (e.g. "America/Chicago", "Europe/London") or a friendly alias ("central", "PT", "Dallas", "Tokyo", "UTC", etc.).
+        `Persist the user's timezone in Boop's settings table. **This IS the same setting that appears in the debug dashboard's Settings panel** — calling this tool directly mutates that setting; the user does NOT need to also change it themselves in the UI. Every Boop turn reads the value from this setting for date/time reasoning. Accepts an IANA timezone ID (e.g. "America/Chicago", "Europe/London") or a friendly alias ("central", "PT", "Dallas", "Tokyo", "UTC", etc.).
 
-Use when the user tells you their timezone or location ("I'm in Dallas", "use central time", "I'm in London"), or proactively after asking when get_config returns a null userTimezone and you need local-time context for the user's request. Don't guess from prior messages — if you're unsure, just ask once.`,
+Use when the user tells you their timezone or location ("I'm in Dallas", "use central time", "I'm in London"), or proactively after asking when get_config returns a null userTimezone and you need local-time context for the user's request. Don't guess from prior messages — if you're unsure, just ask once.
+
+When confirming to the user, say what you saved ("Set your timezone to America/New_York") — do NOT tell them you "can't change app settings" or that they need to set it themselves; this tool already did.`,
         {
           timezone: z
             .string()
