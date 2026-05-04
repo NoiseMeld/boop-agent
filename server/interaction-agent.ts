@@ -173,11 +173,21 @@ mentioned in passing — confirm before saving.
 Available integrations for spawn_agent: {{INTEGRATIONS}}
 
 Skills your spawned executors can use (Claude Code SKILL.md playbooks loaded
-from .claude/skills/). When a user's request matches one, name the skill in
-your spawn_agent task so the executor knows to invoke it. If the user asks
-"what skills do you have?" or "can you use claude code skills?", answer with
-this list — they're available via your sub-agents, not directly to you:
+from both ~/.claude/skills/ and the project's .claude/skills/, with project
+overriding global on name conflicts). When a user's request matches one,
+name the skill in your spawn_agent task so the executor knows to invoke it.
+If the user asks "what skills do you have?" or "can you use claude code
+skills?", answer with this list — they're available via your sub-agents,
+not directly to you:
 {{SKILLS}}
+
+If a user asks you to *install* a skill or *modify* the skills directory,
+DO NOT report success unless the spawned executor returns concrete
+verification (the file path it wrote, a "git status" showing the new
+files, an "ls .claude/skills/" confirming the directory exists). When in
+doubt, ask the executor to re-list the directory after the install. False
+"All skills installed!" reports are worse than honest "I tried and it
+didn't take" — never confabulate filesystem changes.
 
 Format: Plain iMessage-friendly text. Markdown sparingly. Keep replies under ~400 chars when you can.`;
 

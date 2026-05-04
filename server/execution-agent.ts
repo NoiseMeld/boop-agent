@@ -1,6 +1,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
+import { homedir } from "node:os";
 import { api } from "../convex/_generated/api.js";
 import { convex } from "./convex-client.js";
 import { broadcast } from "./broadcast.js";
@@ -149,9 +150,15 @@ export async function spawnExecutionAgent(opts: SpawnOptions): Promise<SpawnResu
         model: requestedModel,
         mcpServers,
         allowedTools,
-        // Load .claude/skills/ so the model can invoke SKILL.md playbooks. Without
-        // this the SDK runs in isolation mode and skills are silently ignored.
-        settingSources: ["project"],
+        // Load both user-global (~/.claude/skills/) and project-local
+        // (.claude/skills/) skill playbooks so the model can invoke any skill
+        // the human has installed via `npx skills add` (which defaults to
+        // global), not just the few that happen to live in this repo. Without
+        // "user", spawned sub-agents would silently ignore globally-installed
+        // skills like extract-transcript / vibe-security / opensrc / etc. and
+        // claim "skill not found" or hallucinate that they invoked them.
+        // Project skills take precedence over global ones with the same name.
+        settingSources: ["user", "project"],
         permissionMode: "bypassPermissions",
         abortController: abort,
       },
@@ -280,25 +287,35 @@ export interface SkillInfo {
   description: string;
 }
 
-// Enumerate skills the execution agent will load via settingSources: ["project"].
-// We surface these to the dispatcher (interaction-agent) so it knows what
-// playbooks its sub-agents can invoke and can hint at them in spawn tasks.
+// Enumerate skills the execution agent will load via
+// settingSources: ["user", "project"]. We surface these to the dispatcher
+// (interaction-agent) so it knows what playbooks its sub-agents can invoke
+// and can hint at them in spawn tasks. Reads from BOTH:
+//   - ~/.claude/skills/        (user-global, where `npx skills add` puts skills by default)
+//   - <cwd>/.claude/skills/    (project-local, repo-tracked skills)
+// Project entries override global entries with the same name (matches the
+// SDK's settingSources precedence: project wins).
 export function availableSkills(): SkillInfo[] {
-  const skillsDir = resolve(process.cwd(), ".claude/skills");
-  if (!existsSync(skillsDir)) return [];
-  const skills: SkillInfo[] = [];
-  for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
-    // Allow symlinks too — the convex agent skills are symlinked from
-    // .agents/skills/ into .claude/skills/, so isDirectory() returns false.
-    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-    const skillFile = resolve(skillsDir, entry.name, "SKILL.md");
-    if (!existsSync(skillFile)) continue;
-    const text = readFileSync(skillFile, "utf8");
-    const fm = text.match(/^---\n([\s\S]+?)\n---/);
-    if (!fm) continue;
-    const name = fm[1].match(/^name:\s*(.+)$/m)?.[1].trim() ?? entry.name;
-    const description = fm[1].match(/^description:\s*(.+)$/m)?.[1].trim() ?? "";
-    skills.push({ name, description });
+  const seen = new Map<string, SkillInfo>();
+
+  // Load global first, then project, so project entries naturally overwrite
+  // global ones with the same name when both Map.set calls fire.
+  for (const dir of [resolve(homedir(), ".claude/skills"), resolve(process.cwd(), ".claude/skills")]) {
+    if (!existsSync(dir)) continue;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      // Allow symlinks too — convex agent skills are symlinked from
+      // .agents/skills/ into .claude/skills/, so isDirectory() returns false.
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+      const skillFile = resolve(dir, entry.name, "SKILL.md");
+      if (!existsSync(skillFile)) continue;
+      const text = readFileSync(skillFile, "utf8");
+      const fm = text.match(/^---\n([\s\S]+?)\n---/);
+      if (!fm) continue;
+      const name = fm[1].match(/^name:\s*(.+)$/m)?.[1].trim() ?? entry.name;
+      const description = fm[1].match(/^description:\s*(.+)$/m)?.[1].trim() ?? "";
+      seen.set(name, { name, description });
+    }
   }
-  return skills.sort((a, b) => a.name.localeCompare(b.name));
+
+  return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
