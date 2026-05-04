@@ -303,36 +303,49 @@ export async function classifyEmailImportance(
 
 // Strip common email boilerplate (transactional footer + leading metadata
 // banners) from a capture-source body so the dictation can be passed cleanly
-// to the IA. Conservative: only strips well-known patterns. If a footer
-// pattern doesn't match, the whole body is returned unchanged — the IA can
-// still handle a few extra lines of noise; what matters is we don't lose
-// content (which is what the classifier was doing when we trusted it to
-// extract the dictation).
+// to the IA. Conservative: only strips well-known patterns. If a pattern
+// doesn't match, the affected text is returned unchanged — the IA can
+// handle a few extra lines of noise. What matters is we don't lose content
+// (which is what an earlier version of this function did when its footer
+// regex used a non-greedy wildcard that matched from the first blank line
+// in the body to the literal "Sent from" footer near the end, swallowing
+// the entire dictation in between).
 function stripCaptureBoilerplate(body: string): string {
   if (!body) return "";
   let out = body;
 
-  // Trailing "Sent from <app>" footer + everything after. Covers Rapture
-  // ("Sent from Rapture\nVoice notes, captured effortlessly\nGet the app"),
-  // Otter ("Sent from Otter.ai"), iOS Mail ("Sent from my iPhone"), etc.
-  // The blank-line prefix (\n\s*\n) tightens the match so we only cut on a
-  // genuine footer break, not a "sent from" appearing mid-dictation.
-  out = out.replace(/\n\s*\n[\s\S]*?Sent from [\s\S]*$/i, "");
+  // Trailing "Sent from <app>" footer + everything after. Anchored DIRECTLY
+  // to a blank-line-then-Sent-from break so we cut at the real footer, not
+  // at the first blank line that happens to precede it somewhere in the
+  // body. Covers Rapture ("Sent from Rapture\nVoice notes..."), Otter
+  // ("Sent from Otter.ai"), iOS Mail ("Sent from my iPhone"), etc.
+  out = out.replace(/\n\s*\nSent from\b[\s\S]*$/i, "");
 
-  // Trailing standalone signature blocks ("--\n..." or "—\n...") — the
-  // mail/RFC convention for sig delimiters.
-  out = out.replace(/\n\s*(--|—)\s*\n[\s\S]*$/, "");
+  // Trailing "--" / "—" RFC-style signature delimiter on its own line,
+  // anchored the same way to avoid swallowing mid-body content.
+  out = out.replace(/\n\s*\n(--|—)\s*\n[\s\S]*$/, "");
 
-  // Leading "Open in Google Docs" / "Transcription" header banners that
-  // some capture apps (notably Rapture) prepend to the body. Drop those
-  // lines until the first non-banner line.
-  const bannerLine = /^(Open in Google Docs|Transcription|Notes?|Recording \w+ \d+, \d+(:\d+)?\s*[AP]M?)\s*$/i;
-  const lines = out.split("\n");
-  let firstReal = 0;
-  while (firstReal < lines.length && (lines[firstReal]!.trim() === "" || bannerLine.test(lines[firstReal]!.trim()))) {
-    firstReal++;
+  // Rapture-specific: the body has a "TRANSCRIPTION" header line above the
+  // actual dictation. If present, drop everything before and including it
+  // (header banners + "Open in Google Docs: <url>" + the "---" separator).
+  // This is the most reliable strip for Rapture's format because it locks
+  // onto a known marker rather than trying to enumerate every header line.
+  const transcriptionMarker = out.match(/(?:^|\n)\s*TRANSCRIPTION\s*\n/i);
+  if (transcriptionMarker && transcriptionMarker.index !== undefined) {
+    out = out.slice(transcriptionMarker.index + transcriptionMarker[0].length);
+  } else {
+    // No explicit marker — fall back to per-line banner stripping. Drops
+    // leading blank lines and known boilerplate lines (Rapture's "Recording
+    // ...AM" timestamp, "Open in Google Docs" with optional URL, "Notes",
+    // standalone "---" separators) until we hit real content.
+    const bannerLine = /^(Open in Google Docs(?::.*)?|Transcription|Notes?|Recording \w+ \d+, ?\d+(?::\d+)?\s*[AP]M?|---+)\s*$/i;
+    const lines = out.split("\n");
+    let firstReal = 0;
+    while (firstReal < lines.length && (lines[firstReal]!.trim() === "" || bannerLine.test(lines[firstReal]!.trim()))) {
+      firstReal++;
+    }
+    out = lines.slice(firstReal).join("\n");
   }
-  out = lines.slice(firstReal).join("\n");
 
   return out.trim();
 }
