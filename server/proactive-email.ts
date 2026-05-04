@@ -1,6 +1,6 @@
 // Webhook-driven Gmail watcher. Runs after Composio fires
 // `composio.trigger.message` for a `GMAIL_NEW_GMAIL_MESSAGE` trigger.
-// Pipeline: ignore non-Gmail → warmup-skip the first event per connection
+// Pipeline: ignore non-Gmail → dedup → enabled-check → self-send filter
 // → recall user preferences → cheap Haiku classifier → branch on action:
 //   - "surface" routes the summary into the interaction agent as a synthetic
 //     system message (kind: "proactive") so it gets the IA's spawn pipeline
@@ -24,12 +24,6 @@ import { describeUserNow } from "./timezone-config.js";
 
 const TRIGGER_SLUG = "GMAIL_NEW_GMAIL_MESSAGE";
 const CLASSIFIER_MODEL = "claude-haiku-4-5-20251001";
-
-// First event per connection since process boot is treated as warmup —
-// classification is skipped to avoid noise from any backfill behavior on
-// trigger creation. Lost on restart, which is fine: missing one notice is
-// preferable to spamming the user with old emails on every server reboot.
-const warmupSeen = new Set<string>();
 
 // Bounded FIFO of recently-handled Gmail messageIds. We ack the webhook
 // 200 immediately, so duplicate deliveries should be rare, but Composio's
@@ -499,20 +493,8 @@ export async function handleEmailEvent(event: NormalizedTriggerEvent): Promise<v
     return;
   }
 
-  // Prime the warmup set BEFORE the enabled check. Otherwise events that
-  // arrive while the feature is disabled never reach this set, and the very
-  // first event after re-enabling gets dropped as "warmup" — which would
-  // make the toggle silently swallow the first real email per connection.
-  const isFirstEventForConnection = !warmupSeen.has(connectionId);
-  warmupSeen.add(connectionId);
-
   if (!(await isProactiveEnabled())) {
     console.log(`[proactive] disabled via settings; ignoring event`);
-    return;
-  }
-
-  if (isFirstEventForConnection) {
-    console.log(`[proactive] warmup, skipping classification for connection ${connectionId}`);
     return;
   }
 
