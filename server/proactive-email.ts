@@ -131,13 +131,13 @@ When action="surface", write a summary in 1-2 short sentences for an iMessage:
 - Under ~200 chars when possible.
 
 CAPTURE / BRAIN-DUMP path (action="memorize"). Some users route voice-note transcriptions or notes-to-self through services that email them content (Rapture, Otter.ai, custom Shortcuts, etc). When a user preference EXPLICITLY designates a sender as a capture source (e.g. "emails from rapture@noisemeld.com are voice-note brain dumps — memorize them"), set action="memorize" instead of surface/drop. In that case:
-- "summary" must be the FULL transcribed content the user dictated (not abbreviated). The body is the gold; preserve it verbatim minus any boilerplate footer ("Sent from Rapture", unsubscribe links, etc).
-- The dispatcher will then route this dictation through the agent as if the user had texted it. The agent's normal flow handles dates, integrations, memory writes, action-vs-acknowledge decisions — you do not need to make any of those calls here. Just identify capture sources and extract the dictation cleanly.
+- The dispatcher reads the raw email body directly (with boilerplate footer stripped deterministically) and routes it through the agent as if the user had texted it. You do NOT need to extract or preserve the dictation — that's handled in code, not in the rubric.
+- Just identify the capture source by sender match against user preferences. Summary on memorize is optional and unused; omit it or include a short note.
 - Only memorize when a preference rule explicitly names this sender as a capture source. Without such a rule, fall back to surface vs. drop on the email's content (most "notification" emails still drop).
 
 Respond with ONLY a JSON object:
 - {"action": "surface", "summary": "..."} when surfacing
-- {"action": "memorize", "summary": "<full dictated content>"} when memorizing
+- {"action": "memorize"} when memorizing (summary unused; the dispatcher reads the raw body)
 - {"action": "drop"} when dropping`;
 
 // Cached read of the proactive-enabled flag from the settings table.
@@ -292,6 +292,42 @@ export async function classifyEmailImportance(
   }
 
   return { action, summary, usage };
+}
+
+// Strip common email boilerplate (transactional footer + leading metadata
+// banners) from a capture-source body so the dictation can be passed cleanly
+// to the IA. Conservative: only strips well-known patterns. If a footer
+// pattern doesn't match, the whole body is returned unchanged — the IA can
+// still handle a few extra lines of noise; what matters is we don't lose
+// content (which is what the classifier was doing when we trusted it to
+// extract the dictation).
+function stripCaptureBoilerplate(body: string): string {
+  if (!body) return "";
+  let out = body;
+
+  // Trailing "Sent from <app>" footer + everything after. Covers Rapture
+  // ("Sent from Rapture\nVoice notes, captured effortlessly\nGet the app"),
+  // Otter ("Sent from Otter.ai"), iOS Mail ("Sent from my iPhone"), etc.
+  // The blank-line prefix (\n\s*\n) tightens the match so we only cut on a
+  // genuine footer break, not a "sent from" appearing mid-dictation.
+  out = out.replace(/\n\s*\n[\s\S]*?Sent from [\s\S]*$/i, "");
+
+  // Trailing standalone signature blocks ("--\n..." or "—\n...") — the
+  // mail/RFC convention for sig delimiters.
+  out = out.replace(/\n\s*(--|—)\s*\n[\s\S]*$/, "");
+
+  // Leading "Open in Google Docs" / "Transcription" header banners that
+  // some capture apps (notably Rapture) prepend to the body. Drop those
+  // lines until the first non-banner line.
+  const bannerLine = /^(Open in Google Docs|Transcription|Notes?|Recording \w+ \d+, \d+(:\d+)?\s*[AP]M?)\s*$/i;
+  const lines = out.split("\n");
+  let firstReal = 0;
+  while (firstReal < lines.length && (lines[firstReal]!.trim() === "" || bannerLine.test(lines[firstReal]!.trim()))) {
+    firstReal++;
+  }
+  out = lines.slice(firstReal).join("\n");
+
+  return out.trim();
 }
 
 async function recallPreferenceLines(): Promise<string[]> {
@@ -497,15 +533,20 @@ export async function handleEmailEvent(event: NormalizedTriggerEvent): Promise<v
   const { action, summary } = await classifyEmailImportance(email, preferences);
 
   if (action === "memorize") {
-    if (!summary) {
-      console.log(`[proactive] memorize requested but classifier returned no content; dropping: ${email.subject}`);
+    // Use the raw email body (with boilerplate stripped deterministically),
+    // NOT the classifier's `summary` field. The Haiku classifier was
+    // truncating long dictations to ~100-200 chars despite the rubric saying
+    // "preserve verbatim" — Haiku optimizes for brevity by training and
+    // doesn't reliably keep multi-paragraph captures intact. The classifier's
+    // job for memorize is just to identify the capture source; content
+    // extraction is handled in code.
+    const dictation = stripCaptureBoilerplate(email.body);
+    if (!dictation) {
+      console.log(`[proactive] memorize: empty body after stripping boilerplate; dropping: ${email.subject}`);
       return;
     }
-    // Route the dictation through the same dispatcher path as inbound
-    // iMessages. Post-turn memory extraction handles per-fact memory writes;
-    // the IA's normal flow handles dates, integrations, and action vs ack.
-    console.log(`[proactive] capture from ${email.sender}: routing dictation as user message (${summary.length} chars)`);
-    await dispatchCaptureAsUserMessage(summary);
+    console.log(`[proactive] capture from ${email.sender}: routing dictation as user message (${dictation.length} chars)`);
+    await dispatchCaptureAsUserMessage(dictation);
     return;
   }
 
