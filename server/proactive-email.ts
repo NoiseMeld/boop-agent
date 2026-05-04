@@ -78,8 +78,21 @@ function normalizeEmail(payload: Record<string, unknown>): NormalizedEmail {
     sender: str(payload.sender) || str(payload.from),
     recipient: str(payload.to) || str(payload.recipient) || undefined,
     snippet: str(preview.body) || str(payload.snippet),
-    body: str(payload.messageText) || str(payload.body) || str(preview.body),
-    timestamp: str(payload.messageTimestamp) || str(payload.timestamp) || undefined,
+    // Composio's Gmail trigger payload uses snake_case (`message_text`)
+    // for the full plain-text body. Earlier SDK versions or different
+    // toolkits may use camelCase, so check both. preview.body is a
+    // ~200-char snippet — fine as a last-resort fallback but never the
+    // first choice for capture content.
+    body:
+      str(payload.message_text) ||
+      str(payload.messageText) ||
+      str(payload.body) ||
+      str(preview.body),
+    timestamp:
+      str(payload.message_timestamp) ||
+      str(payload.messageTimestamp) ||
+      str(payload.timestamp) ||
+      undefined,
   };
 }
 
@@ -487,43 +500,6 @@ export async function handleEmailEvent(event: NormalizedTriggerEvent): Promise<v
   console.log(
     `[proactive] event from ${connectionId}: subject=${JSON.stringify(email.subject || "(none)")} sender=${JSON.stringify(email.sender || "(none)")}`,
   );
-  // TEMP DIAGNOSTIC: dump payload field sizes so we can see whether the
-  // full body lives in a field we're not currently reading. Remove once
-  // we've identified the right field (or confirmed we need a server-side
-  // GMAIL_FETCH_MESSAGE call to get the full body). See memory of this
-  // session for context.
-  try {
-    const fieldSizes: Record<string, number | string> = {};
-    for (const [k, v] of Object.entries(data)) {
-      if (typeof v === "string") fieldSizes[k] = v.length;
-      else if (v === null || v === undefined) fieldSizes[k] = "null";
-      else if (typeof v === "object") fieldSizes[k] = `obj(${Object.keys(v as object).join(",")})`;
-      else fieldSizes[k] = typeof v;
-    }
-    console.log(`[proactive][diag] payload field sizes:`, JSON.stringify(fieldSizes));
-    if (typeof (data as { preview?: unknown }).preview === "object") {
-      const preview = (data as { preview?: Record<string, unknown> }).preview ?? {};
-      const previewSizes: Record<string, number | string> = {};
-      for (const [k, v] of Object.entries(preview)) {
-        if (typeof v === "string") previewSizes[k] = v.length;
-        else previewSizes[k] = typeof v;
-      }
-      console.log(`[proactive][diag] preview field sizes:`, JSON.stringify(previewSizes));
-    }
-    // Show the first 400 chars of the longest string-valued field so we
-    // can see what content is actually being delivered.
-    const longest = Object.entries(data)
-      .filter(([, v]) => typeof v === "string")
-      .sort((a, b) => (b[1] as string).length - (a[1] as string).length)[0];
-    if (longest) {
-      console.log(
-        `[proactive][diag] longest string field "${longest[0]}" (${(longest[1] as string).length} chars):`,
-        JSON.stringify((longest[1] as string).slice(0, 400)),
-      );
-    }
-  } catch (err) {
-    console.warn("[proactive][diag] payload introspection failed:", err);
-  }
 
   if (email.messageId && !rememberMessageId(email.messageId)) {
     console.log(`[proactive] dropped (duplicate delivery for messageId=${email.messageId})`);
